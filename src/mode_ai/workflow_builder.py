@@ -1,5 +1,6 @@
 """
 Workflow Builder cho FLUX.1-schnell GGUF - Tạo ComfyUI workflow JSON programmatically
+Hỗ trợ cả GGUF (cần custom nodes) và BUILTIN (chỉ built-in nodes, không cần cài thêm)
 """
 import json
 from pathlib import Path
@@ -10,10 +11,18 @@ from .prompt_enhancer import PromptEnhancer
 class FluxWorkflowBuilder:
     """Builder cho FLUX workflows"""
     
-    def __init__(self, model_config: Optional[ModelConfig] = None, workflow_config: Optional[WorkflowConfig] = None):
+    def __init__(self, model_config: Optional[ModelConfig] = None, workflow_config: Optional[WorkflowConfig] = None, use_builtin: bool = False):
+        """
+        Args:
+            model_config: Cấu hình model
+            workflow_config: Cấu hình workflow
+            use_builtin: Nếu True, dùng UNETLoader + DualCLIPLoader built-in (không cần ComfyUI-GGUF)
+                         Nếu False, dùng UnetLoaderGGUF + DualCLIPLoaderGGUF (cần cài ComfyUI-GGUF)
+        """
         self.model_config = model_config or ModelConfig()
         self.workflow_config = workflow_config or WorkflowConfig()
         self.prompt_enhancer = PromptEnhancer()
+        self.use_builtin = use_builtin
         self._nodes: Dict[str, Dict] = {}
         self._next_id = 1
     
@@ -23,7 +32,6 @@ class FluxWorkflowBuilder:
             node_id = str(self._next_id)
             self._next_id += 1
         else:
-            # Ensure next_id is ahead
             try:
                 nid_int = int(node_id)
                 if nid_int >= self._next_id:
@@ -38,21 +46,51 @@ class FluxWorkflowBuilder:
         }
         return node_id
     
+    def _get_unet_loader(self):
+        """Get UNET loader config based on use_builtin flag"""
+        if self.use_builtin:
+            # Built-in UNETLoader - dùng fp8 model, không cần custom nodes
+            # Model name cho builtin: flux1-schnell-fp8.safetensors
+            unet_name = self.model_config.unet_name.replace(".gguf", "-fp8.safetensors")
+            # Nếu vẫn là .gguf thì fallback sang fp8
+            if unet_name.endswith(".gguf"):
+                unet_name = "flux1-schnell-fp8.safetensors"
+            return "UNETLoader", {"unet_name": unet_name, "weight_dtype": "fp8_e4m3fn"}, f"Load Diffusion Model - {unet_name} (BUILTIN)"
+        else:
+            # GGUF loader - cần ComfyUI-GGUF custom node
+            return "UnetLoaderGGUF", {"unet_name": self.model_config.unet_name}, f"Unet Loader GGUF - {self.model_config.unet_name}"
+    
+    def _get_clip_loader(self):
+        """Get CLIP loader config"""
+        if self.use_builtin:
+            # Built-in DualCLIPLoader
+            # t5 gguf -> t5xxl_fp8
+            t5_name = self.model_config.t5_name.replace(".gguf", "").replace("t5-v1_1-xxl-encoder-", "")
+            # Map Q4_K_M etc to fp8
+            t5_name = "t5xxl_fp8_e4m3fn.safetensors"
+            return "DualCLIPLoader", {
+                "clip_name1": t5_name,
+                "clip_name2": self.model_config.clip_l_name,
+                "type": "flux"
+            }, "DualCLIPLoader - T5 + CLIP_L (BUILTIN)"
+        else:
+            return "DualCLIPLoaderGGUF", {
+                "clip_name1": self.model_config.t5_name,
+                "clip_name2": self.model_config.clip_l_name,
+                "type": "flux"
+            }, "DualCLIPLoader GGUF"
+    
     def build_simple(self, prompt: str, negative_prompt: str = "", seed: int = 42) -> Dict:
         """Build simple workflow - chỉ generate, không detailer"""
         self._nodes = {}
         self._next_id = 1
         
-        # Loaders
-        unet_id = self._add_node("UnetLoaderGGUF", {
-            "unet_name": self.model_config.unet_name
-        }, f"Unet Loader - {self.model_config.unet_name}")
+        # Loaders - tự động chọn GGUF hoặc BUILTIN
+        unet_class, unet_inputs, unet_title = self._get_unet_loader()
+        clip_class, clip_inputs, clip_title = self._get_clip_loader()
         
-        clip_id = self._add_node("DualCLIPLoaderGGUF", {
-            "clip_name1": self.model_config.t5_name,
-            "clip_name2": self.model_config.clip_l_name,
-            "type": "flux"
-        }, "DualCLIPLoader GGUF")
+        unet_id = self._add_node(unet_class, unet_inputs, unet_title)
+        clip_id = self._add_node(clip_class, clip_inputs, clip_title)
         
         vae_id = self._add_node("VAELoader", {
             "vae_name": self.model_config.vae_name
@@ -97,8 +135,9 @@ class FluxWorkflowBuilder:
         }, "VAE Decode")
         
         # Save
+        prefix = "FLUX_builtin_fp8_simple" if self.use_builtin else self.workflow_config.save_prefix
         save_id = self._add_node("SaveImage", {
-            "filename_prefix": self.workflow_config.save_prefix,
+            "filename_prefix": prefix,
             "images": [decode_id, 0]
         }, "Save Image")
         
@@ -110,15 +149,11 @@ class FluxWorkflowBuilder:
         self._next_id = 1
         
         # Loaders
-        unet_id = self._add_node("UnetLoaderGGUF", {
-            "unet_name": self.model_config.unet_name
-        }, f"Unet Loader - {self.model_config.unet_name}", "1")
+        unet_class, unet_inputs, unet_title = self._get_unet_loader()
+        clip_class, clip_inputs, clip_title = self._get_clip_loader()
         
-        clip_id = self._add_node("DualCLIPLoaderGGUF", {
-            "clip_name1": self.model_config.t5_name,
-            "clip_name2": self.model_config.clip_l_name,
-            "type": "flux"
-        }, "DualCLIP GGUF", "2")
+        unet_id = self._add_node(unet_class, unet_inputs, unet_title, "1")
+        clip_id = self._add_node(clip_class, clip_inputs, clip_title, "2")
         
         vae_id = self._add_node("VAELoader", {
             "vae_name": self.model_config.vae_name
@@ -158,23 +193,23 @@ class FluxWorkflowBuilder:
             "vae": [vae_id, 0]
         }, "VAE Decode Base", "8")
         
-        # Detectors
+        # Detectors (cần Impact Pack)
         face_detector_id = self._add_node("UltralyticsDetectorProvider", {
             "model_name": self.model_config.yolo_face
-        }, "YOLO Face Detector", "10")
+        }, "YOLO Face Detector - Impact Subpack", "10")
         
         hand_detector_id = self._add_node("UltralyticsDetectorProvider", {
             "model_name": self.model_config.yolo_hand
-        }, "YOLO Hand Detector", "11")
+        }, "YOLO Hand Detector - Impact Subpack", "11")
         
         foot_detector_id = self._add_node("UltralyticsDetectorProvider", {
             "model_name": self.model_config.yolo_foot
-        }, "YOLO Foot Detector", "12")
+        }, "YOLO Foot Detector - Impact Subpack", "12")
         
         sam_id = self._add_node("SAMLoader", {
             "model_name": self.model_config.sam_model,
             "device_mode": "AUTO"
-        }, "SAM Loader", "13")
+        }, "SAM Loader - Impact Pack", "13")
         
         # FaceDetailer chain
         last_image_id = decode_id
@@ -214,8 +249,7 @@ class FluxWorkflowBuilder:
                 "sam_model_opt": [sam_id, 0] if face_cfg.use_sam else None,
                 "tiled_encode": face_cfg.tiled_encode,
                 "tiled_decode": face_cfg.tiled_decode
-            }, f"FaceDetailer FACE denoise {face_cfg.denoise}", "20")
-            # Remove None values
+            }, f"FaceDetailer FACE denoise {face_cfg.denoise} - Impact Pack", "20")
             self._nodes[face_detailer_id]["inputs"] = {k: v for k, v in self._nodes[face_detailer_id]["inputs"].items() if v is not None}
             last_image_id = face_detailer_id
         
@@ -253,7 +287,7 @@ class FluxWorkflowBuilder:
                 "bbox_detector": [hand_detector_id, 0],
                 "tiled_encode": hand_cfg.tiled_encode,
                 "tiled_decode": hand_cfg.tiled_decode
-            }, f"FaceDetailer HAND denoise {hand_cfg.denoise}", "21")
+            }, f"FaceDetailer HAND denoise {hand_cfg.denoise} - Impact Pack", "21")
             last_image_id = hand_detailer_id
         
         if self.workflow_config.enable_foot:
@@ -290,18 +324,18 @@ class FluxWorkflowBuilder:
                 "bbox_detector": [foot_detector_id, 0],
                 "tiled_encode": foot_cfg.tiled_encode,
                 "tiled_decode": foot_cfg.tiled_decode
-            }, f"FaceDetailer FOOT denoise {foot_cfg.denoise}", "22")
+            }, f"FaceDetailer FOOT denoise {foot_cfg.denoise} - Impact Pack", "22")
             last_image_id = foot_detailer_id
         
         # Save final
+        prefix = "FLUX_builtin_fp8_toi_uu" if self.use_builtin else self.workflow_config.save_prefix
         save_id = self._add_node("SaveImage", {
-            "filename_prefix": self.workflow_config.save_prefix,
+            "filename_prefix": prefix,
             "images": [last_image_id, 0]
         }, "Save Final Image", "9")
         
-        # Save base for comparison
         base_save_id = self._add_node("SaveImage", {
-            "filename_prefix": f"{self.workflow_config.save_prefix}_base",
+            "filename_prefix": f"{prefix}_base",
             "images": [decode_id, 0]
         }, "Save Base Image", "30")
         
@@ -312,12 +346,11 @@ class FluxWorkflowBuilder:
         self._nodes = {}
         self._next_id = 1
         
-        unet_id = self._add_node("UnetLoaderGGUF", {"unet_name": self.model_config.unet_name}, "Unet GGUF", "1")
-        clip_id = self._add_node("DualCLIPLoaderGGUF", {
-            "clip_name1": self.model_config.t5_name,
-            "clip_name2": self.model_config.clip_l_name,
-            "type": "flux"
-        }, "DualCLIP", "2")
+        unet_class, unet_inputs, unet_title = self._get_unet_loader()
+        clip_class, clip_inputs, clip_title = self._get_clip_loader()
+        
+        unet_id = self._add_node(unet_class, unet_inputs, unet_title, "1")
+        clip_id = self._add_node(clip_class, clip_inputs, clip_title, "2")
         vae_id = self._add_node("VAELoader", {"vae_name": self.model_config.vae_name}, "VAE", "3")
         
         load_image_id = self._add_node("LoadImage", {"image": "input_image.png"}, "Load Image", "4")
@@ -369,7 +402,7 @@ class FluxWorkflowBuilder:
         p.parent.mkdir(parents=True, exist_ok=True)
         with open(p, 'w', encoding='utf-8') as f:
             json.dump(workflow, f, indent=2, ensure_ascii=False)
-        print(f"✅ Saved workflow to {p} ({len(workflow)} nodes)")
+        print(f"✅ Saved workflow to {p} ({len(workflow)} nodes) - {'BUILTIN (no custom nodes)' if self.use_builtin else 'GGUF (needs ComfyUI-GGUF)'}")
     
     def load(self, path: str) -> Dict:
         """Load workflow from JSON"""
@@ -380,11 +413,20 @@ class FluxWorkflowBuilder:
         """Validate workflow"""
         errors = []
         
-        # Check required nodes
         class_types = [node.get("class_type") for node in workflow.values()]
         
-        required = ["UnetLoaderGGUF", "DualCLIPLoaderGGUF", "VAELoader", "KSampler", "VAEDecode", "SaveImage"]
-        for req in required:
+        # Check có ít nhất 1 UNET loader (GGUF hoặc builtin)
+        has_unet = any(ct in ["UnetLoaderGGUF", "UNETLoader", "Load Diffusion Model"] for ct in class_types)
+        if not has_unet:
+            errors.append("Missing UNET loader: need UnetLoaderGGUF or UNETLoader")
+        
+        # Check CLIP loader
+        has_clip = any(ct in ["DualCLIPLoaderGGUF", "DualCLIPLoader"] for ct in class_types)
+        if not has_clip:
+            errors.append("Missing CLIP loader: need DualCLIPLoaderGGUF or DualCLIPLoader")
+        
+        required_builtin = ["VAELoader", "KSampler", "VAEDecode", "SaveImage"]
+        for req in required_builtin:
             if req not in class_types:
                 errors.append(f"Missing required node: {req}")
         
@@ -402,10 +444,51 @@ class FluxWorkflowBuilder:
     
     def get_stats(self, workflow: Dict) -> Dict:
         """Get workflow stats"""
+        node_types = list(set(node.get("class_type") for node in workflow.values()))
+        
+        # Phân loại custom nodes
+        gguf_nodes = [ct for ct in node_types if "GGUF" in ct]
+        impact_nodes = [ct for ct in node_types if ct in ["FaceDetailer", "SAMLoader", "UltralyticsDetectorProvider"]]
+        builtin_only = len(gguf_nodes) == 0 and len(impact_nodes) == 0
+        
         return {
             "total_nodes": len(workflow),
-            "node_types": list(set(node.get("class_type") for node in workflow.values())),
+            "node_types": node_types,
             "has_face_detailer": any(n.get("class_type") == "FaceDetailer" for n in workflow.values()),
             "has_sam": any(n.get("class_type") == "SAMLoader" for n in workflow.values()),
             "has_yolo": any(n.get("class_type") == "UltralyticsDetectorProvider" for n in workflow.values()),
+            "has_gguf": len(gguf_nodes) > 0,
+            "gguf_nodes": gguf_nodes,
+            "impact_nodes": impact_nodes,
+            "builtin_only": builtin_only,
+            "custom_nodes_required": gguf_nodes + impact_nodes,
         }
+    
+    def get_install_guide(self, workflow: Dict) -> str:
+        """Get install guide based on workflow requirements"""
+        stats = self.get_stats(workflow)
+        
+        if stats["builtin_only"]:
+            return "✅ Workflow này chỉ dùng built-in nodes, không cần cài thêm gì! Load và chạy ngay."
+        
+        guide = []
+        if stats["has_gguf"]:
+            guide.append("🔧 Cần cài ComfyUI-GGUF (fix 2 nodes lỗi của bạn):")
+            guide.append("   cd ComfyUI/custom_nodes && git clone https://github.com/city96/ComfyUI-GGUF.git")
+            guide.append("   pip install -r ComfyUI-GGUF/requirements.txt")
+        
+        if stats["has_face_detailer"] or stats["has_sam"] or stats["has_yolo"]:
+            guide.append("\n🔧 Cần cài Impact Pack (cho FaceDetailer):")
+            guide.append("   git clone https://github.com/ltdrdata/ComfyUI-Impact-Pack.git")
+            guide.append("   git clone https://github.com/ltdrdata/ComfyUI-Impact-Subpack.git")
+        
+        guide.append("\n🔄 Sau đó restart ComfyUI")
+        guide.append("\n💡 Hoặc dùng script tự động:")
+        guide.append("   python scripts/install_comfyui_nodes.py --comfyui-path /path/to/ComfyUI")
+        guide.append("   bash scripts/install_comfyui_nodes.sh /path/to/ComfyUI")
+        
+        if stats["has_gguf"]:
+            guide.append("\n🎯 Chỉ muốn fix 2 nodes lỗi nhanh:")
+            guide.append("   bash scripts/install_comfyui_nodes.sh /path/to/ComfyUI --only-gguf")
+        
+        return "\n".join(guide)

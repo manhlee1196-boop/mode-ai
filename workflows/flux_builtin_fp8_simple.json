@@ -1,0 +1,101 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "flux1-schnell-fp8.safetensors",
+      "weight_dtype": "fp8_e4m3fn"
+    },
+    "_meta": {
+      "title": "Load Diffusion Model - FLUX Schnell FP8 (BUILTIN, no custom nodes)"
+    }
+  },
+  "2": {
+    "class_type": "DualCLIPLoader",
+    "inputs": {
+      "clip_name1": "t5xxl_fp8_e4m3fn.safetensors",
+      "clip_name2": "clip_l.safetensors",
+      "type": "flux"
+    },
+    "_meta": {
+      "title": "DualCLIPLoader - T5 + CLIP_L (BUILTIN)"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    },
+    "_meta": {
+      "title": "Load VAE - FLUX (BUILTIN)"
+    }
+  },
+  "4": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    },
+    "_meta": {
+      "title": "Empty Latent 1024x1024 (BUILTIN)"
+    }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "masterpiece, best quality, very aesthetic, 1girl, long silver hair, aqua eyes, school uniform, standing under cherry blossoms, soft afternoon sunlight, detailed face, detailed hands, five fingers, full body, ultra detailed, photorealistic",
+      "clip": ["2", 0]
+    },
+    "_meta": {
+      "title": "Positive Prompt (BUILTIN)"
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "",
+      "clip": ["2", 0]
+    },
+    "_meta": {
+      "title": "Negative Prompt - empty for FLUX (BUILTIN)"
+    }
+  },
+  "7": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 42,
+      "steps": 4,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0,
+      "model": ["1", 0],
+      "positive": ["5", 0],
+      "negative": ["6", 0],
+      "latent_image": ["4", 0]
+    },
+    "_meta": {
+      "title": "KSampler - 4 steps euler/simple cfg 1.0 (BUILTIN)"
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["7", 0],
+      "vae": ["3", 0]
+    },
+    "_meta": {
+      "title": "VAE Decode (BUILTIN)"
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "FLUX_builtin_fp8_simple",
+      "images": ["8", 0]
+    },
+    "_meta": {
+      "title": "Save Image (BUILTIN)"
+    }
+  }
+}

@@ -1,29 +1,44 @@
-# mode-ai 🎨 - FLUX.1-schnell GGUF Workflow Toolkit
+# mode-ai 🎨 - FLUX.1-schnell Workflow Toolkit
 
-Hệ thống workflow tạo ảnh tối ưu cho **FLUX.1-schnell GGUF Q5_K_S**, chạy mượt trên **Colab T4 16GB free** với tổng model **~12.3GB (<15GB)**.
+Hệ thống workflow tạo ảnh tối ưu cho **FLUX.1-schnell**, chạy được trên **Colab T4 16GB free**.
+
+Có **2 chế độ nodes**:
+
+| Chế độ | Nodes | Ưu / nhược |
+|---|---|---|
+| **BUILTIN** (khuyến nghị nếu mới bắt đầu) | `UNETLoader`, `DualCLIPLoader` | ✅ **Không cần cài custom nodes** — chạy ngay, fix lỗi *Missing node type*. Model `flux1-schnell-fp8.safetensors`. |
+| **GGUF** (nhẹ hơn ~12.3GB) | `UnetLoaderGGUF`, `DualCLIPLoaderGGUF` | ✅ Tiết kiệm VRAM hơn. ❌ Cần cài [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF). |
+
+## 🆘 Gặp lỗi "2 nodes affected - Missing node type"?
+
+Đây là lỗi phổ biến: ComfyUI chưa cài custom node **ComfyUI-GGUF** (cung cấp 2 node `UnetLoaderGGUF` và `DualCLIPLoaderGGUF`).
+
+**Fix nhanh nhất (1 lệnh):**
+```bash
+bash scripts/install_comfyui_nodes.sh /path/to/ComfyUI --only-gguf
+```
+
+**Hoặc không cần cài gì cả** — dùng workflow BUILTIN có sẵn:
+```bash
+# Mở trực tiếp trong ComfyUI:
+workflows/flux_builtin_fp8_simple.json    # 9 nodes, 0 custom nodes
+
+# Hoặc tự tạo:
+python scripts/generate.py --prompt "1girl, cherry blossoms" --builtin --workflow simple
+```
+
+Chi tiết: **[docs/INSTALL_MISSING_NODES.md](docs/INSTALL_MISSING_NODES.md)**
 
 ## ✨ Tính năng
 
-- 🚀 **5 workflows ComfyUI JSON** tối ưu sẵn: simple, optimized (main), realistic, hires, inpaint
-- 🛠️ **Python Builder**: Tạo workflow programmatically với `FluxWorkflowBuilder`
-- 🎨 **Prompt Enhancer**: Style presets (anime, photorealistic, Vietnamese, cinematic...)
+- 🚀 **7 workflows ComfyUI JSON**: 1 BUILTIN simple (0 custom nodes), 1 BUILTIN tối ưu, 5 GGUF
+- 🛠️ **Python Builder**: `FluxWorkflowBuilder(use_builtin=True/False)` tạo workflow programmatically
+- 🎨 **Prompt Enhancer**: 6 style presets (anime, photorealistic, realistic_vietnamese, cinematic, portrait, full_body) + 5 preset prompts
 - 🌐 **ComfyUI API Client**: Queue workflow tới ComfyUI server
-- 📊 **Validation**: Kiểm tra workflow tự động
+- 📊 **Validation**: `scripts/validate.py` kiểm tra workflow + báo cáo custom nodes cần cài
 - 🖥️ **Gradio App**: UI tạo workflow trực quan
-- ⚙️ **GitHub Actions**: CI/CD workflow tạo ảnh tự động
-
-## 📦 Model (tổng ~12.3GB)
-
-| File | Size | ComfyUI path |
-|---|---|---|
-| `flux1-schnell-Q5_K_S.gguf` | 8.26 GB | `models/unet/` |
-| `t5-v1_1-xxl-encoder-Q4_K_M.gguf` | 2.9 GB | `models/clip/` |
-| `clip_l.safetensors` | 250 MB | `models/clip/` |
-| `ae.safetensors` | 320 MB | `models/vae/` |
-| `face_yolov8m.pt` | 52 MB | `models/ultralytics/bbox/` |
-| `hand_yolov8s.pt` | 22 MB | `models/ultralytics/bbox/` |
-| `foot_anime_yolo11m_v3.pt` | ~40 MB | `models/ultralytics/bbox/` |
-| `sam_vit_b_01ec64.pth` | 375 MB | `models/sams/` |
+- ⚙️ **GitHub Actions**: CI/CD validate & build workflow tự động
+- 🔧 **Auto-install script**: `scripts/install_comfyui_nodes.sh` cài tất cả custom nodes
 
 ## 🚀 Quick Start
 
@@ -35,59 +50,75 @@ cd mode-ai
 pip install -r requirements.txt
 ```
 
-### 2. Tạo workflow bằng CLI
+### 2. Cài custom nodes (chỉ cần nếu dùng workflow GGUF / FaceDetailer)
 
 ```bash
-# Simple test nhanh
-python scripts/generate.py --prompt "1girl, cherry blossoms" --workflow simple --output workflows/test.json
+# Tự động cài tất cả
+bash scripts/install_comfyui_nodes.sh /path/to/ComfyUI
 
-# Optimized đầy đủ face+hand+foot detailer (main)
-python scripts/generate.py --prompt "beautiful girl, school uniform" --style aesthetic_anime --workflow optimized --width 1024 --height 1024 --seed 42
+# Chỉ cài ComfyUI-GGUF để fix 2 nodes lỗi
+bash scripts/install_comfyui_nodes.sh /path/to/ComfyUI --only-gguf
+
+# Hoặc dùng Python
+python scripts/install_comfyui_nodes.py --comfyui-path /path/to/ComfyUI
+```
+
+### 3. Tạo workflow bằng CLI
+
+```bash
+# BUILTIN - không cần cài gì, chạy ngay
+python scripts/generate.py --prompt "1girl, cherry blossoms" --builtin --workflow simple
+
+# BUILTIN tối ưu - cần Impact Pack cho FaceDetailer
+python scripts/generate.py --prompt "beautiful girl" --builtin --workflow optimized --width 1024 --height 1024 --seed 42
+
+# GGUF - cần ComfyUI-GGUF, nhẹ hơn (~12.3GB)
+python scripts/generate.py --prompt "beautiful girl" --workflow optimized
 
 # Realistic Vietnamese
-python scripts/generate.py --preset vietnamese_aodai --style realistic_vietnamese --workflow realistic --width 832 --height 1216
+python scripts/generate.py --preset vietnamese_aodai --style realistic_vietnamese --workflow realistic --width 832 --height 1216 --builtin
 
 # List styles và presets
 python scripts/generate.py --list-styles
 python scripts/generate.py --list-presets
 
-# Validate tất cả workflows
+# Validate tất cả workflows + báo cáo custom nodes cần cài
 python scripts/validate.py
 ```
 
-### 3. Python API
+### 4. Python API
 
 ```python
 from src.mode_ai import FluxWorkflowBuilder, WorkflowConfig
 from src.mode_ai.config import MODEL_PRESETS
 
-# Config
-model_config = MODEL_PRESETS["q5_optimal"]  # Q5_K_S 8.26GB
-wf_config = WorkflowConfig.square_aesthetic()
-wf_config.width = 1024
-wf_config.height = 1024
-
-# Builder
-builder = FluxWorkflowBuilder(model_config, wf_config)
-
-# Tạo workflow tối ưu
+# --- Chế độ BUILTIN: không cần cài custom nodes ---
+builder = FluxWorkflowBuilder(use_builtin=True)
 workflow = builder.build_optimized(
     prompt="masterpiece, 1girl, long silver hair, aqua eyes, school uniform, cherry blossoms",
     negative_prompt="extra fingers, blurry",
     seed=42
 )
-
-# Validate & save
 is_valid, errors = builder.validate(workflow)
-builder.save(workflow, "workflows/my_workflow.json")
-print(f"Valid: {is_valid}, Nodes: {len(workflow)}")
+stats = builder.get_stats(workflow)     # builtin_only / custom_nodes_required
+print(builder.get_install_guide(workflow))  # hướng dẫn cài nodes nếu thiếu
+builder.save(workflow, "workflows/my_builtin.json")
+
+# --- Chế độ GGUF: nhẹ hơn, cần ComfyUI-GGUF ---
+builder = FluxWorkflowBuilder(
+    model_config=MODEL_PRESETS["q5_optimal"],   # Q5_K_S 8.26GB, tổng ~12.3GB
+    workflow_config=WorkflowConfig.square_aesthetic(),
+    use_builtin=False,
+)
+workflow = builder.build_optimized("1girl, cherry blossoms", seed=42)
+builder.save(workflow, "workflows/my_gguf.json")
 ```
 
-### 4. ComfyUI
+### 5. ComfyUI
 
 **Trong ComfyUI UI:**
-1. Mở ComfyUI (Colab link từ notebook)
-2. Load → chọn file JSON trong `workflows/`
+1. Mở ComfyUI
+2. Drag & drop file JSON trong `workflows/` vào canvas
 3. Queue Prompt
 
 **Via API:**
@@ -95,14 +126,14 @@ print(f"Valid: {is_valid}, Nodes: {len(workflow)}")
 from src.mode_ai.comfy_api import ComfyUIClient
 import json
 
-with open("workflows/flux_schnell_gguf_toi_uu.json") as f:
+with open("workflows/flux_builtin_fp8_simple.json") as f:
     workflow = json.load(f)
 
 client = ComfyUIClient("127.0.0.1:8188")
 result = client.generate_image(workflow, wait=True)
 ```
 
-### 5. Gradio App
+### 6. Gradio App
 
 ```bash
 python app.py
@@ -111,15 +142,25 @@ python app.py
 
 ## 🗂️ Workflows
 
-| File | Mô tả | Thời gian T4 |
-|---|---|---|
-| `flux_schnell_simple.json` | Simple 4 steps, không detailer | ~15s |
-| `flux_schnell_gguf_toi_uu.json` ⭐ | **MAIN** - Tối ưu đầy đủ face(SAM)+hand+foot | ~35s |
-| `flux_schnell_realistic.json` | Photorealistic 832x1216 | ~25s |
-| `flux_schnell_realistic_hires.json` | Realistic + hires 1.5x | ~70s |
-| `flux_schnell_inpaint.json` | Inpaint sửa lỗi | ~20s |
+| File | Nodes | Custom nodes cần | Mô tả | T4 |
+|---|---|---|---|---|
+| `flux_builtin_fp8_simple.json` | 9 | **0** | BUILTIN, chạy ngay không cài gì | ~15s |
+| `flux_builtin_fp8_toi_uu.json` | 17 | Impact x3 | BUILTIN + FaceDetailer face+hand+foot | ~35s |
+| `flux_schnell_simple.json` | 9 | GGUF x2 | Simple 4 steps | ~15s |
+| `flux_schnell_gguf_toi_uu.json` ⭐ | 17 | GGUF x2 + Impact x3 | **MAIN** face(SAM)+hand+foot | ~35s |
+| `flux_schnell_realistic.json` | 12 | GGUF x2 + Impact x3 | Photorealistic 832x1216 | ~25s |
+| `flux_schnell_realistic_hires.json` | 15 | GGUF x2 + Impact x4 | + hires 1.5x upscale | ~70s |
+| `flux_schnell_inpaint.json` | 12 | GGUF x2 | Inpaint sửa lỗi | ~20s |
 
-Xem chi tiết: [docs/WORKFLOW_GUIDE.md](docs/WORKFLOW_GUIDE.md) và [workflows/README.md](workflows/README.md)
+**Custom nodes cần cài:**
+| Node | Pack |
+|---|---|
+| `UnetLoaderGGUF`, `DualCLIPLoaderGGUF` | [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) |
+| `FaceDetailer`, `SAMLoader` | [ComfyUI-Impact-Pack](https://github.com/ltdrdata/ComfyUI-Impact-Pack) |
+| `UltralyticsDetectorProvider` | [ComfyUI-Impact-Subpack](https://github.com/ltdrdata/ComfyUI-Impact-Subpack) |
+| `UltimateSDUpscale` | [ComfyUI_UltimateSDUpscale](https://github.com/ssitu/ComfyUI_UltimateSDUpscale) |
+
+Xem chi tiết: [docs/WORKFLOW_GUIDE.md](docs/WORKFLOW_GUIDE.md), [docs/INSTALL_MISSING_NODES.md](docs/INSTALL_MISSING_NODES.md), [workflows/README.md](workflows/README.md)
 
 ## ⚙️ Tham số chuẩn FLUX schnell
 
@@ -139,34 +180,38 @@ FaceDetailer:
 
 ```
 mode-ai/
-├── workflows/               # JSON workflows (5 files)
-├── src/mode_ai/             # Python package
-│   ├── config.py            # ModelConfig, WorkflowConfig
-│   ├── workflow_builder.py  # FluxWorkflowBuilder
-│   ├── comfy_api.py         # ComfyUIClient
-│   └── prompt_enhancer.py   # PromptEnhancer
+├── workflows/                    # 7 JSON workflows + README
+├── src/mode_ai/                  # Python package
+│   ├── config.py                 # ModelConfig, WorkflowConfig, presets Q4/Q5/Q6/Q8
+│   ├── workflow_builder.py       # FluxWorkflowBuilder (use_builtin=True/False)
+│   ├── comfy_api.py              # ComfyUIClient + MockClient
+│   └── prompt_enhancer.py        # PromptEnhancer (6 styles, 5 presets)
 ├── scripts/
-│   ├── generate.py          # CLI tạo workflow
-│   └── validate.py          # Validate workflows
+│   ├── generate.py               # CLI tạo workflow (--builtin, --workflow)
+│   ├── validate.py               # Validate + báo cáo custom nodes
+│   ├── install_comfyui_nodes.sh  # Auto cài custom nodes
+│   └── install_comfyui_nodes.py  # Auto cài custom nodes (Python)
 ├── docs/
-│   └── WORKFLOW_GUIDE.md    # Hướng dẫn chi tiết
+│   ├── WORKFLOW_GUIDE.md         # Hướng dẫn chi tiết tham số
+│   ├── INSTALL_MISSING_NODES.md  # Fix lỗi Missing node type
+│   └── CHECK_REPORT.md           # Báo cáo kiểm tra
 ├── .github/workflows/
-│   └── image-generation.yml # CI/CD
-├── app.py                   # Gradio app
+│   └── image-generation.yml      # CI/CD
+├── app.py                        # Gradio app
 ├── ComfyUI_Colab_WAI_fixed.ipynb
 └── QUY_TRINH_FLUX.md
 ```
 
 ## 🔄 Quy trình khuyến nghị
 
-1. **Test prompt** với `simple` (15s)
-2. **Generate chính** với `toi_uu` (35s, có detailer)
-3. **Sửa lỗi** tay/chân bằng `inpaint` hoặc Gradio Cell 6
-4. **Upscale** nếu cần in bằng `hires`
+1. **Test prompt** với `flux_builtin_fp8_simple.json` (15s, không cần cài gì)
+2. **Generate chính** với `flux_schnell_gguf_toi_uu.json` (35s, có detailer)
+3. **Sửa lỗi** tay/chân bằng `flux_schnell_inpaint.json` hoặc Gradio Cell 6
+4. **Upscale** nếu cần in bằng `flux_schnell_realistic_hires.json`
 
 ## 🛠️ GitHub Actions
 
-Workflow tự động tạo ảnh khi dispatch:
+Workflow tự động validate & build khi push/dispatch:
 
 - Vào Actions → Image Generation Workflow → Run workflow
 - Nhập prompt, style, size, seed
@@ -176,6 +221,7 @@ Workflow tự động tạo ảnh khi dispatch:
 
 - [QUY_TRINH_FLUX.md](QUY_TRINH_FLUX.md) - Hướng dẫn FLUX gốc
 - [docs/WORKFLOW_GUIDE.md](docs/WORKFLOW_GUIDE.md) - Chi tiết workflow
+- [docs/INSTALL_MISSING_NODES.md](docs/INSTALL_MISSING_NODES.md) - Fix lỗi Missing node type
 - [workflows/README.md](workflows/README.md) - Danh sách workflows
 
 ## 📝 License

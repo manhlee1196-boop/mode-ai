@@ -63,6 +63,14 @@ on:
           - q4_balanced
           - q6_high
           - q8_max
+      node_mode:
+        description: 'Chế độ nodes (builtin = KHÔNG cần cài custom nodes, fix lỗi Missing node type)'
+        required: false
+        default: 'builtin'
+        type: choice
+        options:
+          - builtin
+          - gguf
 
   push:
     branches:
@@ -93,6 +101,8 @@ jobs:
       - name: Validate workflows
         run: |
           python scripts/validate.py
+          echo "---"
+          echo "Custom nodes can be installed with scripts/install_comfyui_nodes.sh"
 
   build-workflow:
     name: 🛠️ Build Workflow JSON
@@ -115,16 +125,18 @@ jobs:
 
       - name: Generate workflow
         run: |
-          python scripts/generate.py \
-            --prompt "${{ inputs.prompt }}" \
-            --style "${{ inputs.style }}" \
-            --workflow "${{ inputs.workflow_type }}" \
-            --width "${{ inputs.width }}" \
-            --height "${{ inputs.height }}" \
-            --seed "${{ inputs.seed }}" \
-            --model "${{ inputs.model_preset }}" \
-            --output "workflows/generated_${{ github.run_id }}.json" \
-            --no-queue
+          ARGS="--prompt \"${{ inputs.prompt }}\" --style \"${{ inputs.style }}\" --workflow \"${{ inputs.workflow_type }}\" --width \"${{ inputs.width }}\" --height \"${{ inputs.height }}\" --seed \"${{ inputs.seed }}\" --output \"workflows/generated_${{ github.run_id }}.json\" --no-queue"
+
+          if [ "${{ inputs.node_mode }}" = "builtin" ]; then
+            echo "🔧 Node mode: BUILTIN (không cần cài custom nodes)"
+            ARGS="$ARGS --builtin"
+          else
+            echo "🔧 Node mode: GGUF (cần ComfyUI-GGUF)"
+            ARGS="$ARGS --model ${{ inputs.model_preset }}"
+          fi
+
+          echo "Running: python scripts/generate.py $ARGS"
+          python scripts/generate.py $ARGS
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4

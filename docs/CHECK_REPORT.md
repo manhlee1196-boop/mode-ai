@@ -2,6 +2,7 @@
 
 Ngày kiểm tra: 2026-09-24
 Branch: arena/01a0d39f-mode-ai
+Bổ sung lần 2: fix lỗi **"2 nodes affected - Missing node type / Missing Node Packs"** phản hồi từ user
 
 ## 📋 Kiểm tra ban đầu
 
@@ -30,7 +31,7 @@ Branch: arena/01a0d39f-mode-ai
 
 ## ✅ Đã tạo mới
 
-### 1. Workflows (5 files) - `workflows/`
+### 1. Workflows (7 files) - `workflows/`
 | File | Nodes | Mô tả | Valid |
 |---|---|---|---|
 | `flux_schnell_simple.json` | 9 | Simple test nhanh | ✅ |
@@ -75,6 +76,54 @@ Branch: arena/01a0d39f-mode-ai
 | `requirements.txt` | Dependencies |
 | `README.md` | README mới đầy đủ 200+ dòng |
 
+## 🐛 Lần 2 - Fix lỗi "2 nodes affected - Missing node type"
+
+User report: workflow JSON load vào ComfyUI báo **"2 nodes affected - Missing node type"** và **"Missing Node Packs"**.
+
+### Phân tích nguyên nhân
+Workflow dùng `UnetLoaderGGUF` + `DualCLIPLoaderGGUF` → do custom node pack **ComfyUI-GGUF** chưa được cài trong ComfyUI của user.
+
+### Cách fix đã triển khai
+
+**A. Tạo workflow BUILTIN không cần custom nodes (chạy ngay):**
+- `workflows/flux_builtin_fp8_simple.json` — 9 nodes, dùng `UNETLoader` + `DualCLIPLoader` built-in của ComfyUI, **0 custom nodes**
+- `workflows/flux_builtin_fp8_toi_uu.json` — 17 nodes, BUILTIN + FaceDetailer (chỉ cần Impact Pack)
+
+**B. Script tự động cài custom nodes:**
+- `scripts/install_comfyui_nodes.sh` — 1 lệnh cài tất cả: ComfyUI-GGUF, Impact Pack, Impact Subpack, UltimateSDUpscale, Manager. Có flag `--only-gguf` để fix nhanh 2 nodes lỗi
+- `scripts/install_comfyui_nodes.py` — bản Python, có `--list` xem các pack cần thiết
+
+**C. Builder hỗ trợ cả 2 chế độ:**
+```python
+FluxWorkflowBuilder(use_builtin=True)   # UNETLoader / DualCLIPLoader - không cần cài gì
+FluxWorkflowBuilder(use_builtin=False)  # UnetLoaderGGUF / DualCLIPLoaderGGUF - cần ComfyUI-GGUF
+```
+- `get_stats()` trả về `builtin_only` và `custom_nodes_required`
+- `get_install_guide(workflow)` trả hướng dẫn cài đúng pack cần thiết cho workflow đó
+
+**D. CLI:**
+```bash
+python scripts/generate.py --prompt "..." --builtin --workflow simple     # không cần custom nodes
+python scripts/generate.py --prompt "..." --workflow optimized           # GGUF
+```
+
+**E. Docs:**
+- `docs/INSTALL_MISSING_NODES.md` — phân tích 2 nodes lỗi, 3 cách fix (Manager / manual / BUILTIN), link tải model FP8
+- Cập nhật `README.md`, `workflows/README.md`, `docs/WORKFLOW_GUIDE.md`
+- CI thêm input `node_mode` (builtin / gguf)
+
+### Validation sau fix
+```
+Total: 7/7 passed
+BUILTIN (no custom nodes needed): 1 workflows
+GGUF (needs ComfyUI-GGUF): 5 workflows
+```
+
+### Khuyến nghị cho user
+1. **Nhanh nhất**: mở `workflows/flux_builtin_fp8_simple.json` trong ComfyUI → cần tải 4 model FP8 (~16GB, xem docs/INSTALL_MISSING_NODES.md)
+2. **Giữ model GGUF đã tải**: `bash scripts/install_comfyui_nodes.sh /content/ComfyUI --only-gguf` → restart ComfyUI
+3. **Cài tất cả**: `bash scripts/install_comfyui_nodes.sh /content/ComfyUI`
+
 ## 🧪 Test Results
 
 ### Validate workflows:
@@ -111,7 +160,7 @@ python scripts/generate.py --list-presets
 | README | 1 dòng | 200+ dòng đầy đủ |
 | CI/CD | Không | GitHub Actions workflow |
 | UI | Chỉ Colab notebook | + Gradio app.py |
-| Tổng files | 3 | 20+ |
+| Tổng files | 3 | 25+ |
 
 ## 🎯 Workflow chính - flux_schnell_gguf_toi_uu.json
 

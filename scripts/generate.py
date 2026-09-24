@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 """
 Script tạo ảnh với FLUX workflow
+Hỗ trợ cả GGUF (cần custom nodes) và BUILTIN (không cần custom nodes)
+
 Usage:
+  # GGUF (cần cài ComfyUI-GGUF, fix 2 nodes lỗi)
   python scripts/generate.py --prompt "1girl, cherry blossoms" --style aesthetic_anime --workflow optimized
-  python scripts/generate.py --prompt "Vietnamese woman in ao dai" --style realistic_vietnamese --width 832 --height 1216
+
+  # BUILTIN (không cần cài gì, chạy ngay)
+  python scripts/generate.py --prompt "1girl, cherry blossoms" --builtin --workflow simple
+
+  # Vietnamese realistic
+  python scripts/generate.py --prompt "Vietnamese woman in ao dai" --style realistic_vietnamese --width 832 --height 1216 --builtin
 """
 import argparse
 import sys
@@ -19,7 +27,7 @@ from mode_ai.prompt_enhancer import PromptEnhancer, PRESET_PROMPTS
 from mode_ai.comfy_api import get_client
 
 def main():
-    parser = argparse.ArgumentParser(description="FLUX.1-schnell Image Generation")
+    parser = argparse.ArgumentParser(description="FLUX.1-schnell Image Generation - Hỗ trợ cả GGUF và BUILTIN")
     parser.add_argument("--prompt", type=str, default="", help="Prompt tạo ảnh")
     parser.add_argument("--preset", type=str, choices=list(PRESET_PROMPTS.keys()), help="Dùng preset prompt")
     parser.add_argument("--style", type=str, default="aesthetic_anime", choices=PromptEnhancer.list_styles(), help="Style preset")
@@ -29,7 +37,8 @@ def main():
     parser.add_argument("--height", type=int, default=1024, help="Height")
     parser.add_argument("--seed", type=int, default=42, help="Seed")
     parser.add_argument("--steps", type=int, default=4, help="Steps (schnell chuẩn 4)")
-    parser.add_argument("--model", type=str, default="q5_optimal", choices=list(MODEL_PRESETS.keys()), help="Model preset")
+    parser.add_argument("--model", type=str, default="q5_optimal", choices=list(MODEL_PRESETS.keys()), help="Model preset (chỉ cho GGUF)")
+    parser.add_argument("--builtin", action="store_true", help="Dùng BUILTIN nodes (UNETLoader, DualCLIPLoader) - KHÔNG cần cài custom nodes, fix lỗi Missing node type")
     parser.add_argument("--output", type=str, default="workflows/generated.json", help="Output workflow JSON path")
     parser.add_argument("--server", type=str, default="127.0.0.1:8188", help="ComfyUI server address")
     parser.add_argument("--no-queue", action="store_true", help="Chỉ tạo workflow JSON, không queue vào ComfyUI")
@@ -63,7 +72,12 @@ def main():
     
     # Model config
     model_config = MODEL_PRESETS.get(args.model, MODEL_PRESETS["q5_optimal"])
-    print(f"Model: {model_config.unet_name} ({model_config.total_size_gb:.1f}GB total)")
+    if args.builtin:
+        print(f"🔧 Mode: BUILTIN (UNETLoader + DualCLIPLoader) - Không cần cài custom nodes, fix lỗi Missing node type")
+        print(f"   Model sẽ dùng: flux1-schnell-fp8.safetensors + t5xxl_fp8 + clip_l + ae.safetensors")
+    else:
+        print(f"🔧 Mode: GGUF (UnetLoaderGGUF + DualCLIPLoaderGGUF) - Cần cài ComfyUI-GGUF")
+        print(f"   Model: {model_config.unet_name} ({model_config.total_size_gb:.1f}GB total)")
     
     # Workflow config
     if args.workflow == "realistic" or args.style in ["photorealistic", "realistic_vietnamese"]:
@@ -80,8 +94,8 @@ def main():
     wf_config.sampler.seed = args.seed
     wf_config.sampler.steps = args.steps
     
-    # Builder
-    builder = FluxWorkflowBuilder(model_config=model_config, workflow_config=wf_config)
+    # Builder - với use_builtin flag
+    builder = FluxWorkflowBuilder(model_config=model_config, workflow_config=wf_config, use_builtin=args.builtin)
     
     # Enhance prompt
     enhancer = PromptEnhancer(style=args.style)
@@ -105,6 +119,14 @@ def main():
     is_valid, errors = builder.validate(workflow)
     stats = builder.get_stats(workflow)
     print(f"\n📊 Workflow stats: {stats}")
+    
+    # Show install guide if needed
+    if stats["custom_nodes_required"]:
+        print(f"\n⚠️ Workflow này cần cài custom nodes: {stats['custom_nodes_required']}")
+        print(builder.get_install_guide(workflow))
+    else:
+        print("\n✅ Workflow BUILTIN - không cần cài thêm custom nodes, chạy ngay!")
+    
     if not is_valid:
         print(f"❌ Validation errors: {errors}")
         return
@@ -126,6 +148,12 @@ def main():
     
     print(f"\n✅ Done! Workflow saved to {args.output}")
     print("   Load this JSON in ComfyUI: Drag & drop or Load button")
+    
+    if not args.builtin and stats["has_gguf"]:
+        print("\n💡 Gặp lỗi 'Missing node type' với 2 nodes?")
+        print("   → Chạy: bash scripts/install_comfyui_nodes.sh /path/to/ComfyUI --only-gguf")
+        print("   → Hoặc dùng --builtin để tạo workflow không cần custom nodes:")
+        print(f"   → python scripts/generate.py --prompt \"{prompt}\" --builtin --workflow {args.workflow} --output workflows/builtin_fix.json")
 
 if __name__ == "__main__":
     main()

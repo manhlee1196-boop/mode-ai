@@ -1,6 +1,27 @@
-# 🎨 Hướng Dẫn Workflow Tạo Ảnh - FLUX.1-schnell GGUF
+# 🎨 Hướng Dẫn Workflow Tạo Ảnh - FLUX.1-schnell
 
 Tài liệu chi tiết về hệ thống workflow tạo ảnh cho mode-ai.
+
+## 🆘 Lỗi "2 nodes affected - Missing node type / Missing Node Packs"?
+
+**Nguyên nhân**: ComfyUI chưa cài custom node **ComfyUI-GGUF**, nên 2 node `UnetLoaderGGUF` và `DualCLIPLoaderGGUF` không tồn tại.
+
+**Có 2 cách fix:**
+
+**A. Cài ComfyUI-GGUF** (giữ workflow GGUF, tiết kiệm VRAM ~12.3GB):
+```bash
+bash scripts/install_comfyui_nodes.sh /path/to/ComfyUI --only-gguf
+# Restart ComfyUI → load lại JSON
+```
+
+**B. Dùng workflow BUILTIN** (không cần cài gì, chạy ngay):
+```bash
+python scripts/generate.py --prompt "1girl, cherry blossoms" --builtin --workflow simple
+# Hoặc mở trực tiếp workflows/flux_builtin_fp8_simple.json trong ComfyUI
+```
+Workflow BUILTIN dùng `UNETLoader` + `DualCLIPLoader` (built-in của ComfyUI), model `flux1-schnell-fp8.safetensors`.
+
+Chi tiết: [INSTALL_MISSING_NODES.md](INSTALL_MISSING_NODES.md)
 
 ## 📦 Tổng Quan Model
 
@@ -17,6 +38,17 @@ Tài liệu chi tiết về hệ thống workflow tạo ảnh cho mode-ai.
 | **TỔNG** | **~12.3 GB** | **<15GB ✅** |
 
 ## 🗂️ Danh Sách Workflows
+
+### 0. `flux_builtin_fp8_simple.json` - BUILTIN, không cần cài gì ⭐ (mới)
+- **Mục đích**: Test nhanh **không cần custom nodes** — fix lỗi Missing node type
+- **Nodes**: 9 nodes (UNETLoader, DualCLIPLoader, VAELoader, EmptyLatent, 2x CLIPTextEncode, KSampler, VAEDecode, SaveImage)
+- **Custom nodes cần**: **0**
+- **Model cần**: `flux1-schnell-fp8.safetensors`, `t5xxl_fp8_e4m3fn.safetensors`, `clip_l.safetensors`, `ae.safetensors`
+- **Thời gian**: ~15-20s trên T4
+
+### 0b. `flux_builtin_fp8_toi_uu.json` - BUILTIN + FaceDetailer
+- **Custom nodes cần**: Impact Pack x3 (FaceDetailer, SAMLoader, UltralyticsDetectorProvider)
+- **Nodes**: 17 nodes, cấu trúc giống MAIN nhưng dùng UNETLoader/DualCLIPLoader built-in
 
 ### 1. `flux_schnell_simple.json` - Đơn giản nhất
 - **Mục đích**: Test nhanh, 4 steps, không detailer
@@ -107,25 +139,36 @@ wf_config = WorkflowConfig.square_aesthetic()
 wf_config.width = 1024
 wf_config.height = 1024
 
-# Builder
-builder = FluxWorkflowBuilder(model_config, wf_config)
+# Builder - BUILTIN: KHÔNG cần cài custom nodes (fix lỗi Missing node type)
+builder = FluxWorkflowBuilder(use_builtin=True)
 workflow = builder.build_optimized(
     prompt="1girl, cherry blossoms, masterpiece",
     negative_prompt="extra fingers, blurry",
     seed=42
 )
 
+# Hoặc GGUF: model Q5_K_S nhẹ hơn ~12.3GB nhưng cần ComfyUI-GGUF
+builder = FluxWorkflowBuilder(model_config, wf_config, use_builtin=False)
+workflow = builder.build_optimized(prompt="1girl, cherry blossoms", seed=42)
+
 # Save
 builder.save(workflow, "workflows/my_workflow.json")
 
-# Validate
+# Validate + kiểm tra custom nodes cần cài
 is_valid, errors = builder.validate(workflow)
+stats = builder.get_stats(workflow)
 print(is_valid, errors)
+print("custom_nodes_required:", stats["custom_nodes_required"])
+print("builtin_only:", stats["builtin_only"])
+print(builder.get_install_guide(workflow))
 ```
 
 ### Cách 2: CLI Script
 ```bash
-# Tạo workflow đơn giản
+# Tạo workflow BUILTIN - KHÔNG cần cài custom nodes (chạy ngay)
+python scripts/generate.py --prompt "1girl, school uniform" --builtin --workflow simple --output workflows/test.json
+
+# Tạo workflow GGUF - model nhẹ hơn, cần ComfyUI-GGUF
 python scripts/generate.py --prompt "1girl, school uniform" --workflow simple --output workflows/test.json
 
 # Tạo workflow tối ưu với style realistic
@@ -140,6 +183,12 @@ python scripts/generate.py --prompt "beautiful landscape" --no-queue --output wo
 # List styles
 python scripts/generate.py --list-styles
 python scripts/generate.py --list-presets
+
+# Validate tất cả workflows + báo cáo custom nodes cần cài
+python scripts/validate.py
+
+# Cài tất cả custom nodes còn thiếu
+bash scripts/install_comfyui_nodes.sh /path/to/ComfyUI
 ```
 
 ### Cách 3: ComfyUI UI
@@ -230,6 +279,13 @@ mode-ai/
 
 ## ❌ Xử Lý Lỗi
 
+- **"2 nodes affected - Missing node type / Missing Node Packs"**:
+  - Nguyên nhân: chưa cài custom node **ComfyUI-GGUF** (cung cấp `UnetLoaderGGUF` + `DualCLIPLoaderGGUF`)
+  - Fix nhanh: `bash scripts/install_comfyui_nodes.sh /path/to/ComfyUI --only-gguf` → restart ComfyUI
+  - Hoặc dùng workflow BUILTIN không cần cài gì: `workflows/flux_builtin_fp8_simple.json`
+  - Hoặc tạo lại bằng CLI: `python scripts/generate.py --prompt "..." --builtin --workflow simple`
+  - Xem thêm: [INSTALL_MISSING_NODES.md](INSTALL_MISSING_NODES.md)
+
 - **OOM / CUDA out of memory**:
   - Chắc chắn `VRAM=lowvram` trong Cell 3
   - Đổi `VAE_PREC = cpu-vae`
@@ -247,7 +303,7 @@ mode-ai/
 
 ## 🔄 Quy Trình Khuyến Nghị
 
-1. **Generate base** với `flux_schnell_simple.json` để test prompt nhanh (15s)
+1. **Generate base** với `flux_builtin_fp8_simple.json` để test prompt nhanh (15s, **không cần cài gì**)
 2. **Chọn ảnh ưng** → chạy lại với `flux_schnell_gguf_toi_uu.json` để có detailer đầy đủ (35s)
 3. **Nếu còn lỗi tay/chân** → dùng `flux_schnell_inpaint.json` hoặc Gradio Cell 6 để tô và sửa
 4. **Nếu cần in** → dùng `flux_schnell_realistic_hires.json` để upscale 1.5x

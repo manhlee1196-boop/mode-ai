@@ -29,7 +29,7 @@ def list_workflows():
         return []
     return [str(p) for p in wf_dir.glob("*.json")]
 
-def generate_workflow_fn(prompt, preset, style, workflow_type, width, height, seed, model_preset, use_preset):
+def generate_workflow_fn(prompt, preset, style, workflow_type, width, height, seed, model_preset, use_preset, use_builtin):
     # Use preset if selected
     if use_preset and preset in PRESET_PROMPTS:
         prompt = PRESET_PROMPTS[preset]
@@ -54,7 +54,7 @@ def generate_workflow_fn(prompt, preset, style, workflow_type, width, height, se
         wf_config.height = int(height)
         wf_config.sampler.seed = int(seed)
         
-        builder = FluxWorkflowBuilder(model_config=model_config, workflow_config=wf_config)
+        builder = FluxWorkflowBuilder(model_config=model_config, workflow_config=wf_config, use_builtin=use_builtin)
         
         enhancer = PromptEnhancer(style=style)
         enhanced = enhancer.enhance(prompt)
@@ -71,11 +71,21 @@ def generate_workflow_fn(prompt, preset, style, workflow_type, width, height, se
         stats = builder.get_stats(workflow)
         
         # Save
-        output_path = Path(f"workflows/generated_{seed}.json")
+        mode_tag = "builtin" if use_builtin else "gguf"
+        output_path = Path(f"workflows/generated_{mode_tag}_{seed}.json")
         builder.save(workflow, str(output_path))
+        
+        mode_str = "🔧 BUILTIN (UNETLoader/DualCLIPLoader - KHÔNG cần cài custom nodes)" if use_builtin else "🔧 GGUF (UnetLoaderGGUF/DualCLIPLoaderGGUF - cần ComfyUI-GGUF)"
+        
+        custom_warn = ""
+        if stats["custom_nodes_required"]:
+            custom_warn = f"\n⚠️ Cần cài custom nodes: {stats['custom_nodes_required']}\nChạy: bash scripts/install_comfyui_nodes.sh /path/to/ComfyUI"
+        else:
+            custom_warn = "\n✅ Không cần cài custom nodes - load và chạy ngay trong ComfyUI!"
         
         info = f"""✅ Workflow tạo thành công!
 
+{mode_str}
 📝 Original: {prompt}
 ✨ Enhanced: {enhanced}
 🚫 Negative: {negative}
@@ -88,6 +98,7 @@ def generate_workflow_fn(prompt, preset, style, workflow_type, width, height, se
 📁 Saved: {output_path}
 
 Errors: {errors if errors else 'None'}
+{custom_warn}
 """
         
         workflow_json = json.dumps(workflow, indent=2, ensure_ascii=False)
@@ -146,6 +157,12 @@ def create_ui():
                 preset_dropdown = gr.Dropdown(choices=list(PRESET_PROMPTS.keys()), label="Preset prompts", value=None)
                 use_preset_checkbox = gr.Checkbox(label="Dùng preset thay vì prompt trên", value=False)
                 
+                gr.Markdown("""#### 🔧 Chế độ nodes
+- **BUILTIN**: `UNETLoader` + `DualCLIPLoader` — **không cần cài custom nodes**, fix lỗi *Missing node type*. Dùng model `flux1-schnell-fp8.safetensors`.
+- **GGUF**: `UnetLoaderGGUF` + `DualCLIPLoaderGGUF` — model `flux1-schnell-Q5_K_S.gguf`, nhẹ hơn (~12.3GB), nhưng phải cài **ComfyUI-GGUF**.
+""")
+                use_builtin_checkbox = gr.Checkbox(label="Dùng BUILTIN (không cần cài custom nodes) - fix lỗi Missing node type", value=True)
+                
                 with gr.Row():
                     style_dropdown = gr.Dropdown(choices=PromptEnhancer.list_styles(), value="aesthetic_anime", label="Style")
                     workflow_type_dropdown = gr.Dropdown(choices=["simple", "optimized", "realistic", "hires", "inpaint"], value="optimized", label="Workflow type")
@@ -190,7 +207,7 @@ def create_ui():
         # Events
         generate_btn.click(
             fn=generate_workflow_fn,
-            inputs=[prompt_input, preset_dropdown, style_dropdown, workflow_type_dropdown, width_slider, height_slider, seed_input, model_preset_dropdown, use_preset_checkbox],
+            inputs=[prompt_input, preset_dropdown, style_dropdown, workflow_type_dropdown, width_slider, height_slider, seed_input, model_preset_dropdown, use_preset_checkbox, use_builtin_checkbox],
             outputs=[info_output, workflow_json_output, file_path_output]
         )
         
