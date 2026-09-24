@@ -197,9 +197,45 @@ Cấu hình của lượt chạy cuối được ghi ở `/content/lan_chay_cuoi
 | **Tải model đứng im** | rớt mạng giữa chừng | Chạy lại Cell 3 — `curl -C -` tiếp tục từ phần đã tải |
 | **`TAESD previews enabled, but could not find models/vae_approx/taef1_decoder`** | tên file preview sai | Cell 3 của bản này tải đúng `taef1_decoder.pth`; nếu vẫn lỗi, đặt `PREVIEW = auto` |
 | **cloudflared không ra link** | block UDP/QUIC | Chuyển `TUNNEL` sang `cloudflared http2`, hoặc chạy Cell 9 (localtunnel) |
+| **Ảnh mờ / loãng** | VAE đang chạy fp16 · cfg>1 · UNET lượng tử mạnh | Xem mục [Ảnh bị mờ](#-ảnh-bị-mờ) bên dưới |
 
 Khi nghi ngờ: **chạy Cell 8** — nó liệt kê đúng các node còn thiếu, model ComfyUI nhìn thấy,
 và VRAM đang dùng.
+
+### 🫧 Ảnh bị mờ
+
+"Mờ" là cảm giác — phải **đo** mới sửa được. Chạy **Cell 8b**: nó đo độ nét bằng phương sai
+Laplacian trên 4 cấu hình (cùng prompt, cùng seed) rồi xếp hạng, kèm **mốc tham chiếu tự hiệu
+chuẩn trên chính ảnh của bạn** (so với bản ảnh đó bị làm mờ radius=2). Không có ngưỡng cố định
+nào được bịa ra.
+
+Ba nguyên nhân, theo thứ tự nên kiểm tra:
+
+**1. VAE đang chạy fp16 — nguyên nhân số 1.** `comfy/sd.py:1101`:
+
+```python
+if dtype is None:
+    dtype = model_management.vae_dtype(self.device, self.working_dtypes)
+self.vae_dtype = dtype
+self.first_stage_model.to(self.vae_dtype)   # cast TOÀN BỘ VAE
+```
+
+VAE chuẩn có `working_dtypes = [bf16, fp32]` (`sd.py:515`) — **không có fp16**. Cờ
+`--fp16-vae` ép thẳng fp16, bỏ qua danh sách được phép. Mặc định của ComfyUI trên T4
+(không có bf16) là **fp32**. Decode bằng fp16 mất mantissa → ảnh mờ, loãng màu.
+→ Cell 5: `VAE_PREC = "Mặc định"` (hoặc `fp32-vae`), rồi **chạy lại Cell 5** (phải khởi
+động lại ComfyUI mới có tác dụng). fp16 chỉ nên dùng khi thật sự thiếu VRAM (~1.5 GB).
+
+**2. `cfg > 1` trên model chưng cất.** schnell được chưng cất cho **4 bước, cfg = 1.0**.
+Nâng cfg (để negative có tác dụng) hoặc chạy 8 bước đều có thể làm ảnh mềm/cháy.
+→ Cell 8b sẽ nói rõ ② có mờ hơn ① không. Nếu có: `NEG_MODE = khong`, hoặc hạ `CFG` 1.5.
+
+**3. UNET lượng tử quá mạnh.** `flux1-schnell-Q5_K_S` là bản Q5 nhỏ nhất. Nếu VRAM còn,
+thử `Q5_K_M` / `Q6_K` (Cell 3 đổi tên file).
+
+**Làm nét (`SAC_NET`)** là vá triệu chứng, không phải chữa nguyên nhân — hãy đo bằng Cell 8b
+trước. `alpha = 1.0` của node `ImageSharpen` đã rất mạnh (kernel = gaussian × `-(alpha*10)`,
+`comfy_extras/nodes_post_processing.py`); mức vừa dùng là **0.2–0.4**.
 
 ---
 

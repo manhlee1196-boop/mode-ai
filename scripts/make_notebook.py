@@ -572,7 +572,7 @@ TUNNEL = "cloudflared http2"  # @param ["cloudflared http2", "cloudflared quic",
 VRAM_MODE = "Mặc định — Dynamic VRAM (khuyến nghị)"  # @param ["Mặc định — Dynamic VRAM (khuyến nghị)", "lowvram", "normalvram", "highvram", "novram", "cpu"]
 RESERVE_VRAM_GB = 1.0  # @param {type:"slider", min:0.0, max:4.0, step:0.1}
 FORCE_FP16 = True  # @param {type:"boolean"}
-VAE_PREC = "fp16-vae"  # @param ["fp16-vae", "fp32-vae", "cpu-vae", "Mặc định"]
+VAE_PREC = "Mặc định"  # @param ["Mặc định", "fp32-vae", "fp16-vae", "cpu-vae"]
 ATTENTION = "pytorch (SDPA)"  # @param ["pytorch (SDPA)", "sage", "flash", "Mặc định"]
 PREVIEW = "taesd"  # @param ["taesd", "auto", "latent2rgb", "none"]
 CACHE_LRU = 0  # @param {type:"integer"}
@@ -614,6 +614,12 @@ if RESERVE_VRAM_GB and RESERVE_VRAM_GB > 0 and not VRAM_MODE.startswith('cpu'):
     cmd += ['--reserve-vram', str(float(RESERVE_VRAM_GB))]
 if FORCE_FP16:
     cmd.append('--force-fp16')
+if VAE_PREC == 'fp16-vae':
+    # comfy/sd.py:1101 — VAE bị cast TOÀN BỘ sang dtype này. ComfyUI chỉ chọn fp16 khi
+    # được ép: working_dtypes của VAE chuẩn là [bf16, fp32] (sd.py:515), nên mặc định
+    # trên T4 (không có bf16) là fp32. Ép fp16 → mất mantissa khi decode → ảnh mờ/loãng.
+    log('⚠️ fp16-vae: VAE chạy ở fp16 → ảnh FLUX hay bị mờ, loãng màu. '
+        'Chỉ nên dùng khi thật sự thiếu VRAM (tiết kiệm ~1.5 GB).')
 if VAE_PREC in ('fp16-vae', 'fp32-vae', 'cpu-vae'):
     cmd.append('--' + VAE_PREC)
 att_map = {'pytorch (SDPA)': '--use-pytorch-cross-attention',
@@ -717,6 +723,7 @@ SO_ANH = 1  # @param {type:"slider", min:1, max:4, step:1}
 
 # ╔═════════════════════ 5) KHUNG HÌNH & ĐẦU RA ═════════════╗
 SIZE = "theo preset (khuyên dùng)"  # @param __SIZE_IDS__
+SAC_NET = 0.0  # @param {type:"slider", min:0, max:1.5, step:0.05}
 TEN_FILE = "flux/anh"  # @param {type:"string"}
 NHIEU_PROMPT = ""  # @param {type:"string"}
 LUU_VAO_DRIVE = False  # @param {type:"boolean"}
@@ -809,19 +816,25 @@ def chon_size(nhan, preset_size, mac_dinh=(832, 1216)):
 
 
 def xu_ly_cfg(negative, cfg, steps, tu_dong):
-    """cfg = 1.0 → negative bị bỏ qua (samplers.py:610). Tự nâng nếu được phép."""
+    """cfg = 1.0 → negative bị bỏ qua (samplers.py:610). Tự nâng nếu được phép.
+
+    Chỉ nâng cfg, KHÔNG tự đổi số bước: schnell được chưng cất cho đúng 4 bước,
+    chạy 8 bước trên lịch 4 bước có thể làm ảnh mềm/cháy. Muốn thử thì tự chỉnh
+    ô STEPS và so bằng Cell 8b (đo độ nét).
+    """
     cfg, steps, note = float(cfg), int(steps), ''
     if negative and cfg <= 1.0:
         if tu_dong:
-            cfg, steps = CFG_NEG, max(steps, STEPS_CFG)
-            note = ('đang dùng negative → tự nâng cfg=%.1f, steps=%d (chậm hơn cfg=1.0). '
+            cfg = CFG_NEG
+            note = ('đang dùng negative → tự nâng cfg 1.0 → %.1f (vẫn giữ %d bước). '
                     'Muốn nhanh lại: NEG_MODE = "khong - không dùng negative".' % (cfg, steps))
         else:
             note = ('⚠️ cfg=1.0 → ComfyUI BỎ QUA negative (comfy/samplers.py:610). '
                     'Hãy nâng CFG hoặc bật TU_DONG_BAT_CFG.')
-    elif negative and steps < STEPS_CFG:
-        note = ('⚠️ cfg=%.1f mà chỉ %d bước: model chưng cất dễ ra ảnh cháy màu, '
-                'nên để ít nhất %d bước.' % (cfg, steps, STEPS_CFG))
+    if negative and cfg > 1.0 and steps > 4:
+        note = ((note + ' ') if note else '') + (
+            '⚠️ %d bước trên model chưng cất 4 bước có thể làm ảnh mềm/cháy — '
+            'hạ về 4 hoặc so bằng Cell 8b.' % steps)
     return cfg, steps, note
 
 
@@ -867,8 +880,33 @@ def _pos_neg(wf):
     return (enc[0] if enc else None), (enc[1] if len(enc) > 1 else None)
 
 
+def _chen_sac_net(wf, alpha, bat_dau=90):
+    """Chèn node ImageSharpen trước mỗi SaveImage (alpha <= 0 → không chèn).
+
+    ImageSharpen làm unsharp mask: kernel = gaussian * -(alpha*10) rồi chỉnh tâm để
+    tổng = 1 (comfy_extras/nodes_post_processing.py). alpha=1.0 đã rất mạnh, 0.2-0.4
+    là mức "vừa đủ". Đây là vá triệu chứng — nếu ảnh mờ, đo bằng Cell 8b để tìm
+    NGUYÊN NHÂN (VAE fp16, cfg/steps,...) trước khi dùng cái này.
+    """
+    if not alpha or float(alpha) <= 0:
+        return wf
+    for i, nid in enumerate(_nodes(wf, 'SaveImage')):
+        src = wf[nid]['inputs'].get('images')
+        if not src:
+            continue
+        new_id = bat_dau + i
+        while str(new_id) in wf:
+            new_id += 1
+        wf[str(new_id)] = {'class_type': 'ImageSharpen', 'inputs': {
+            'image': [src[0], src[1]],
+            'sharpen_radius': 1, 'sigma': 1.0, 'alpha': float(alpha)}}
+        wf[nid]['inputs']['images'] = [str(new_id), 0]
+    return wf
+
+
 def prepare(pipeline, prompt, w, h, seed, negative='', cfg=1.0, steps=4, bc_sua=4,
-            sampler='euler', scheduler='simple', ten_file='flux/anh', batch=1):
+            sampler='euler', scheduler='simple', ten_file='flux/anh', batch=1,
+            sac_net=0.0):
     path = os.path.join(WORKFLOW_DIR, '%s.json' % pipeline)
     if not os.path.isfile(path):
         raise FileNotFoundError('%s không có — chạy Cell 4 trước' % path)
@@ -907,7 +945,7 @@ def prepare(pipeline, prompt, w, h, seed, negative='', cfg=1.0, steps=4, bc_sua=
 
     for nid in _nodes(wf, 'SaveImage'):
         wf[nid]['inputs']['filename_prefix'] = ten_file
-    return wf
+    return _chen_sac_net(wf, sac_net)
 
 
 def run(wf, timeout=900):
@@ -950,7 +988,8 @@ def generate(prompt=PROMPT, preset=PRESET, pipeline=PIPELINE, size=SIZE,
              them=THEM_VAO_PROMPT, neg_mode=NEG_MODE, negative_tu_viet=NEGATIVE_PROMPT,
              cfg=CFG, tu_dong_cfg=TU_DONG_BAT_CFG, steps=STEPS, bc_sua=BC_SUA_CHI_TIET,
              sampler=SAMPLER, scheduler=SCHEDULER, seed=SEED, n=SO_ANH,
-             ten_file=TEN_FILE, nhieu=NHIEU_PROMPT, show=True, luu_drive=LUU_VAO_DRIVE):
+             ten_file=TEN_FILE, nhieu=NHIEU_PROMPT, sac_net=SAC_NET,
+             show=True, luu_drive=LUU_VAO_DRIVE):
     """Tạo ảnh. Mọi ô ở trên đều có thể truyền đè khi gọi bằng code."""
     prompt, pipeline, preset_size, doc = apply_preset(preset, prompt, pipeline, them)
     w, h = chon_size(size, preset_size)
@@ -967,6 +1006,8 @@ def generate(prompt=PROMPT, preset=PRESET, pipeline=PIPELINE, size=SIZE,
         'cfg / steps': '%.1f / %d' % (cfg, steps),
         'sampler': '%s + %s' % (sampler, scheduler),
         'sua chi tiet': '%d bước' % int(bc_sua),
+        'sac net': ('%.2f (đang vá mờ — nên tìm nguyên nhân bằng Cell 8b)' % float(sac_net))
+                   if float(sac_net) > 0 else 'tắt',
         'negative': (negative[:68] + '...') if len(negative) > 68 else (negative or '(không)'),
         'so anh': '%d prompt x %d' % (len(ds_prompt), int(n)),
     })
@@ -984,7 +1025,7 @@ def generate(prompt=PROMPT, preset=PRESET, pipeline=PIPELINE, size=SIZE,
             s = int(seed) + i if int(seed) >= 0 else random.randint(0, 2 ** 31 - 1)
             t0 = time.time()
             wf = prepare(pipeline, p_txt, w, h, s, negative, cfg, steps, bc_sua,
-                         sampler, scheduler, ten_file)
+                         sampler, scheduler, ten_file, sac_net=sac_net)
             files = run(wf)
             for f in files:
                 ket_qua.append(f)
@@ -1240,6 +1281,159 @@ else:
     print('\n✅ Đủ node cho cả 5 workflow')
 print('\nLog ComfyUI (30 dòng cuối):')
 os.system('tail -30 /content/comfyui.log')
+''')
+
+# =========================================================================== CELL 8b
+code(r'''
+# @title 🔍 CELL 8b — Đo độ nét & A/B tìm nguyên nhân ảnh mờ
+CHAY_AB = True  # @param {type:"boolean"}
+PRESET_AB = "chan_dung_can"  # @param __PRESET_IDS__
+PIPELINE_AB = "flux_q5_standard"  # @param ["flux_q5_fast", "flux_q5_standard", "flux_q5_quality", "flux_q5_hires"]
+PROMPT_AB = ""  # @param {type:"string"}
+SIZE_AB = "theo preset (khuyên dùng)"  # @param __SIZE_IDS__
+SEED_AB = 12345  # @param {type:"integer"}
+
+# "Mờ" là cảm giác. Đo được thì mới sửa được: đây là phương sai Laplacian —
+# ảnh càng nét, số càng lớn. Chỉ so các ảnh CÙNG kích thước với nhau.
+import os, glob, time
+import numpy as np
+from PIL import Image, ImageFilter
+from IPython.display import display
+
+OUT_AB = '/content/ComfyUI/output'
+
+
+def do_net(anh):
+    """Độ nét = phương sai của Laplacian (4 lân cận).
+
+    Trả về (lap_var, ti_le):
+      lap_var — tuyệt đối (so sánh các ảnh CÙNG kích thước)
+      ti_le   — lap_var / phương sai ảnh (bớt phụ thuộc tương phản)
+    """
+    im = Image.open(anh).convert('L') if isinstance(anh, str) else anh.convert('L')
+    a = np.asarray(im, dtype=np.float32)      # thang 0-255 để số đọc được
+    lap = (a[1:-1, 1:-1] * 4.0 - a[:-2, 1:-1] - a[2:, 1:-1] - a[1:-1, :-2] - a[1:-1, 2:])
+    v_lap = float(lap.var())
+    v_anh = float(a.var())
+    return v_lap, (v_lap / v_anh if v_anh > 1e-6 else 0.0)
+
+
+def mo_tham_chieu(anh, radius=2):
+    """Mốc tham chiếu TỰ HIỆU CHUẨN: chính ảnh này, nếu bị mờ radius=2 thì ra bao nhiêu.
+
+    Không dùng ngưỡng cố định (vô nghĩa vì tuỳ nội dung ảnh) — dùng ảnh của bạn
+    làm thước đo: lap_var của bạn so với bản đã làm mờ của chính nó.
+    """
+    im = Image.open(anh) if isinstance(anh, str) else anh
+    return do_net(im.filter(ImageFilter.GaussianBlur(radius)))[0]
+
+
+def do_thu_muc(thu_muc=OUT_AB, toi_da=10):
+    """Đo độ nét mọi ảnh trong thư mục output."""
+    fs = sorted(glob.glob(os.path.join(thu_muc, '**', '*.png'), recursive=True),
+                key=os.path.getmtime, reverse=True)[:int(toi_da)]
+    if not fs:
+        print('Chưa có ảnh nào trong %s — chạy Cell 6 trước' % thu_muc)
+        return []
+    print('%-46s %10s %8s' % ('ảnh', 'lap_var', 'ti_le'))
+    print('-' * 68)
+    rows = []
+    for f in fs:
+        lv, tl = do_net(f)
+        rows.append((f, lv, tl))
+        print('%-46s %10.2f %8.4f' % (os.path.basename(f)[:46], lv, tl))
+    return rows
+
+
+# 4 cấu hình để khoanh vùng nguyên nhân. Cùng prompt + cùng seed nên nội dung
+# gần như giống hệt nhau → chỉ khác do cấu hình.
+CAU_HINH_AB = [
+    ('① không negative · cfg 1.0 · 4 bước',
+     dict(neg_mode='khong - không dùng negative', cfg=1.0, steps=4)),
+    ('② có negative · cfg 2.0 · 4 bước',
+     dict(neg_mode='theo preset', cfg=1.0, tu_dong_cfg=True, steps=4)),
+    ('③ có negative · cfg 2.0 · 8 bước',
+     dict(neg_mode='theo preset', cfg=1.0, tu_dong_cfg=True, steps=8)),
+    ('④ như ① · + làm nét 0.35 (vá triệu chứng)',
+     dict(neg_mode='khong - không dùng negative', cfg=1.0, steps=4, sac_net=0.35)),
+]
+
+
+def ab_chong_mo(preset=PRESET_AB, prompt=PROMPT_AB, pipeline=PIPELINE_AB,
+                size=SIZE_AB, seed=SEED_AB):
+    """Chạy 4 cấu hình trên cùng một seed, đo độ nét từng cái, xếp hạng."""
+    if 'generate' not in globals():
+        print('❌ Chưa có hàm generate() — chạy Cell 6 trước')
+        return []
+    ket_qua = []
+    for i, (ten, kw) in enumerate(CAU_HINH_AB):
+        t0 = time.time()
+        try:
+            files = generate(preset=preset, prompt=prompt or None, pipeline=pipeline,
+                             size=size, seed=int(seed), n=1, show=False,
+                             ten_file='flux/ab%d' % i, **kw)
+        except Exception as e:
+            print('  %s → LỖI: %s' % (ten, str(e)[:110]))
+            continue
+        if not files:
+            print('  %s → không có file' % ten)
+            continue
+        f = files[-1]
+        lv, tl = do_net(f)
+        ket_qua.append((ten, lv, tl, f, time.time() - t0))
+        print('  %s → xong (%.0fs)' % (ten, time.time() - t0))
+
+    if not ket_qua:
+        return []
+    print('\n%-42s %10s %8s %8s' % ('cấu hình', 'lap_var', 'ti_le', 'giây'))
+    print('-' * 72)
+    for ten, lv, tl, f, dt in sorted(ket_qua, key=lambda r: -r[1]):
+        print('%-42s %10.2f %8.4f %8.0f' % (ten[:42], lv, tl, dt))
+
+    sx = sorted(ket_qua, key=lambda r: -r[1])
+    tot, second = sx[0], (sx[1] if len(sx) > 1 else None)
+    print('\n🏆 Nét nhất: %s' % tot[0])
+    try:
+        display(Image.open(tot[3]))
+    except Exception:
+        pass
+    tham_chieu = mo_tham_chieu(tot[3])
+    print('📏 Mốc trên chính ảnh này: nếu bị mờ radius=2 thì lap_var ≈ %.2f, '
+          'ảnh của bạn đang %.2f (gấp %.1f lần).'
+          % (tham_chieu, tot[1], (tot[1] / tham_chieu) if tham_chieu > 0 else 0))
+    if second:
+        print('   So với cấu hình đứng sau: nét hơn %.0f%%.'
+              % ((tot[1] / second[1] - 1) * 100 if second[1] > 0 else 0))
+
+    n1 = next((r for r in ket_qua if r[0].startswith('①')), None)
+    n2 = next((r for r in ket_qua if r[0].startswith('②')), None)
+    print('\n📌 Kết luận gợi ý (dựa trên số đo của chính máy bạn):')
+    if n1 and n2 and n2[1] < n1[1] * 0.85:
+        print('   • ② (có negative, cfg 2.0) MỜ HƠN ① rõ rệt → cfg>1 đang làm mềm ảnh.')
+        print('     Giữ NEG_MODE = "khong" (nhanh + nét), hoặc hạ CFG xuống 1.5.')
+    elif n1 and n2 and n2[1] > n1[1] * 1.15:
+        print('   • ② NÉT HƠN ① → negative/cfg không làm mờ, thậm chí còn giúp.')
+    elif n1 and n2:
+        print('   • ② ≈ ① → negative/cfg không phải thủ phạm.')
+    chenh = (tot[1] / tham_chieu) if tham_chieu > 0 else 0
+    if chenh < 3:
+        print('   • Ảnh nét nhất vẫn chỉ gấp %.1f lần bản "mờ radius=2" → mờ từ NGUỒN,' % chenh)
+        print('     không phải do cfg. Kiểm tra theo thứ tự:')
+        print('       1) Cell 5 → VAE_PREC phải là "Mặc định" hoặc "fp32-vae"')
+        print('          (fp16-vae làm VAE decode mất chi tiết; mặc định của ComfyUI')
+        print('           trên T4 là fp32 vì T4 không có bf16 — comfy/sd.py:1101).')
+        print('          Đổi xong PHẢI chạy lại Cell 5 (khởi động lại ComfyUI) rồi đo lại.')
+        print('       2) UNET Q5_K_S → thử Q5_K_M / Q6_K nếu VRAM còn.')
+        print('       3) Ảnh đang xem có đúng kích thước gốc không (đừng phóng to để xem).')
+    else:
+        print('   • Ảnh nét nhất gấp %.1f lần mốc mờ → pipeline ổn, chỉ cần chọn cấu hình đứng đầu.' % chenh)
+    return ket_qua
+
+
+if CHAY_AB:
+    ab_chong_mo()
+else:
+    do_thu_muc()
 ''')
 
 # =========================================================================== CELL 9
