@@ -197,7 +197,7 @@ subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '--no-input',
 import torch
 if not torch.cuda.is_available():
     raise RuntimeError('❌ torch không thấy CUDA — kiểm tra Runtime type là GPU (T4)')
-log(f'PyTorch {torch.__version__} | CUDA {torch.version.cuda} | {torch.cuda.get_device_name(0)}')
+log(f'PyTorch {getattr(torch, "__version__", "?")} | CUDA {torch.version.cuda} | {torch.cuda.get_device_name(0)}')
 log('✅ Xong Cell 1 → chạy Cell 2')
 ''')
 
@@ -207,7 +207,7 @@ code(r'''
 PIN_GGUF = "main"  # @param {type:"string"}
 PIN_IMPACT = "main"  # @param {type:"string"}
 
-import os, sys, json, time, subprocess
+import os, sys, re, json, time, subprocess
 
 def log(msg):
     print(f'[{time.strftime("%H:%M:%S")}] {msg}', flush=True)
@@ -275,30 +275,67 @@ for path, dest in pairs:
     log(f'   {path} → {dest}')
 
 # ---------- KIỂM TRA (bản cũ không có bước này nên lỗi âm thầm) ----------
+def pkg_version(dist, module=None):
+    """Lấy version package, KHÔNG BAO GIỜ crash.
+
+    Nhiều package không có thuộc tính __version__ (vd `gguf`) → phải hỏi
+    importlib.metadata (đọc dist-info do pip ghi), rồi mới fallback sang attribute.
+    """
+    try:
+        from importlib.metadata import version, PackageNotFoundError
+        try:
+            return version(dist)
+        except PackageNotFoundError:
+            pass
+    except Exception:
+        pass
+    try:
+        v = getattr(__import__(module or dist), '__version__', None)
+        return str(v) if v else None
+    except Exception:
+        return None
+
+
+def vtuple(v):
+    """'0.19.0rc1' → (0, 19, 0). Chỉ lấy phần số đầu mỗi đoạn, không crash."""
+    out = []
+    for seg in str(v or '').split('.')[:3]:
+        m = re.match(r'\d+', seg.strip())
+        out.append(int(m.group()) if m else 0)
+    return tuple(out) or (0,)
+
+
+# (tên pip, tên module để import, lý do cần)
+CAN = [('gguf', 'gguf', 'ComfyUI-GGUF: UnetLoaderGGUF/DualCLIPLoaderGGUF'),
+       ('sentencepiece', 'sentencepiece', 'tokenizer T5 của GGUF'),
+       ('scikit-image', 'skimage', 'Impact Pack (FaceDetailer) — thiếu là pack raise khi import'),
+       ('piexif', 'piexif', 'Impact Pack'),
+       ('dill', 'dill', 'Impact Pack'),
+       ('segment-anything', 'segment_anything', 'SAMLoader'),
+       ('matplotlib', 'matplotlib', 'Impact Subpack (UltralyticsDetectorProvider)'),
+       ('ultralytics', 'ultralytics', 'Impact Subpack (YOLO)')]
+
 log('Kiểm tra import các package node cần:')
 missing = []
-for mod, why in [('gguf', 'ComfyUI-GGUF: UnetLoaderGGUF/DualCLIPLoaderGGUF'),
-                 ('sentencepiece', 'tokenizer T5 của GGUF'),
-                 ('skimage', 'Impact Pack (FaceDetailer) — thiếu là pack raise khi import'),
-                 ('piexif', 'Impact Pack'),
-                 ('dill', 'Impact Pack'),
-                 ('segment_anything', 'SAMLoader'),
-                 ('matplotlib', 'Impact Subpack (UltralyticsDetectorProvider)'),
-                 ('ultralytics', 'Impact Subpack (YOLO)')]:
+for dist, mod, why in CAN:
     try:
-        m = __import__(mod)
-        ver = getattr(m, '__version__', '?')
-        log(f'   ✅ {mod} {ver}  ({why})')
+        __import__(mod)
+        log(f'   ✅ {dist} {pkg_version(dist, mod) or "không rõ version"}  ({why})')
     except Exception as e:
-        missing.append(f'{mod} ({why}): {e}')
-        log(f'   ❌ {mod}: {e}')
+        missing.append(f'{dist} ({why}): {e}')
+        log(f'   ❌ {dist}: {e}')
 
 if missing:
     raise RuntimeError('❌ Thiếu dependency, ComfyUI sẽ thiếu node:\n  - ' + '\n  - '.join(missing))
 
-import gguf as _gguf
-if tuple(int(x) for x in str(_gguf.__version__).split('.')[:2]) < (0, 13):
-    log(f'⚠️ gguf {_gguf.__version__} < 0.13 — ComfyUI-GGUF yêu cầu >=0.13')
+# Phiên bản tối thiểu — chỉ CẢNH BÁO, không dừng cell
+for dist, need in [('gguf', (0, 13))]:
+    v = pkg_version(dist)
+    if v is None:
+        log(f'   ⚠️ Không đọc được version của {dist} — bỏ qua kiểm tra tối thiểu')
+    elif vtuple(v) < need:
+        n = '.'.join(str(x) for x in need)
+        log(f'   ⚠️ {dist} {v} < {n} — nâng cấp: pip install -U "{dist}>={n}"')
 log('✅ Xong Cell 2 → chạy Cell 3')
 ''')
 
@@ -1075,6 +1112,32 @@ def _loaded_names(tree: ast.AST) -> set[str]:
             if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
 
 
+def check_no_raw_version(nb: dict) -> None:
+    """Cấm đọc `module.__version__` trực tiếp trong notebook.
+
+    Rất nhiều package KHÔNG định nghĩa `__version__` — đáng chú ý là `gguf`
+    (đã gây `AttributeError: module 'gguf' has no attribute '__version__'`,
+    làm gãy Cell 2 ngay tại đoạn vốn chỉ để in cảnh báo).
+    Hãy dùng `pkg_version(dist, module)`, nó hỏi importlib.metadata trước.
+    """
+    # Lưu ý: getattr(x, '__version__', '?') truyền tên attribute dưới dạng CHUỖI hằng,
+    # không phải ast.Attribute → tự nhiên đã được miễn, không cần ngoại lệ.
+    bad: list[str] = []
+    for i, cell in enumerate(nb["cells"]):
+        if cell["cell_type"] != "code":
+            continue
+        tree = ast.parse("".join(cell["source"]))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr == "__version__":
+                bad.append(f"  cell {i} dòng {node.lineno}: {ast.unparse(node)} "
+                           f"— dùng getattr(x, '__version__', '?') hoặc pkg_version(dist, module)")
+    if bad:
+        raise AssertionError(
+            "❌ Đọc `module.__version__` trực tiếp (có thể AttributeError, vd package `gguf`):\n"
+            + "\n".join(bad))
+    print("✅ không đọc module.__version__ trực tiếp")
+
+
 def check_undefined_names(nb: dict) -> None:
     """Bắt tên dùng mà chưa được định nghĩa.
 
@@ -1116,6 +1179,7 @@ def self_check(nb: dict, builder_src: str) -> None:
             raise AssertionError("Cell 4 chưa được nhúng builder")
     print(f"✅ {n_code} code cell parse OK (ast)")
     check_undefined_names(nb)
+    check_no_raw_version(nb)
 
     # builder nhúng trong notebook phải giống hệt file gốc
     nb_src = None
