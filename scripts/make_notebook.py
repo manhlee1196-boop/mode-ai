@@ -9,6 +9,7 @@ Kiểm tra tự động khi chạy:
 """
 from __future__ import annotations
 
+import argparse
 import ast
 import json
 import os
@@ -1124,25 +1125,49 @@ def self_check(nb: dict, builder_src: str) -> None:
     # chạy builder đó và so với workflows/*.json đã validate
     ns: dict = {}
     exec(compile(builder_src, "<notebook-cell4>", "exec"), ns)
-    import json as _json
-    for name, wf in ns["build_all"]().items():
-        path = os.path.join(ROOT, "workflows", f"{name}.json")
-        on_disk = _json.load(open(path, encoding="utf-8"))
-        assert on_disk == wf, f"{name}: notebook sinh khác workflows/{name}.json"
-    print(f"✅ builder trong notebook sinh đúng {len(ns['build_all']())} workflow đã validate")
+    built = ns["build_all"]()
+    bad: list[str] = []
+    for name, wf in built.items():
+        rel = f"workflows/{name}.json"
+        path = os.path.join(ROOT, rel)
+        if not os.path.isfile(path):
+            bad.append(f"{rel}: KHÔNG CÓ FILE (chạy scripts/build_workflows.py)")
+            continue
+        on_disk = json.load(open(path, encoding="utf-8"))
+        if on_disk == wf:
+            continue
+        keys = sorted(set(on_disk) | set(wf))
+        for k in keys:
+            a, b = on_disk.get(k), wf.get(k)
+            if a != b:
+                bad.append(f"{rel}: node {k} khác nhau — repo={str(a)[:90]} | "
+                           f"builder={str(b)[:90]}")
+                break
+    if bad:
+        raise AssertionError(
+            "❌ workflows/ trong repo KHÔNG KHỚP với scripts/build_workflows.py:\n  - "
+            + "\n  - ".join(bad)
+            + "\n\n  Sửa: python3 scripts/build_workflows.py   (hoặc scripts/check_sync.py --fix)")
+    print(f"✅ builder trong notebook sinh đúng {len(built)} workflow đã validate")
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("-o", "--out", default=OUT, help="đường dẫn file .ipynb đích")
+    a = ap.parse_args()
+
     src = builder_source()
     for i, (kind, text) in enumerate(CELLS):
         if "__BUILDER__" in text:
             CELLS[i] = (kind, text.replace("__BUILDER__", src.rstrip()))
     nb = build_notebook()
     self_check(nb, src)
-    with open(OUT, "w", encoding="utf-8") as fh:
+    os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".", exist_ok=True)
+    with open(a.out, "w", encoding="utf-8") as fh:
         json.dump(nb, fh, ensure_ascii=False, indent=1)
-    size = os.path.getsize(OUT) / 1024
-    print(f"✅ Đã ghi {os.path.relpath(OUT, ROOT)} ({size:.0f} KB, {len(nb['cells'])} cell)")
+    size = os.path.getsize(a.out) / 1024
+    print(f"✅ Đã ghi {os.path.relpath(a.out, ROOT)} "
+          f"({size:.0f} KB, {len(nb['cells'])} cell)")
     return 0
 
 

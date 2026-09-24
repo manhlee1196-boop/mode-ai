@@ -1,0 +1,50 @@
+# Kiểm tra workflow FLUX — chạy trên mọi push/PR, KHÔNG cần GPU và không cần mạng
+# (workflows/node_spec.json đã được commit sẵn).
+#
+# Bắt 3 loại hỏng:
+#   1. Artifact sinh ra (workflows/, notebook) lệch khỏi scripts/ — do sửa tay hoặc
+#      sửa build_workflows.py mà quên chạy lại
+#   2. Workflow sai so với INPUT_TYPES thật của ComfyUI/GGUF/Impact Pack
+#   3. Notebook hỏng: cell lỗi cú pháp, tên dùng chưa định nghĩa, builder lệch
+name: Kiểm tra workflow FLUX
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Đồng bộ + kiểm tra tĩnh
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Tổng quan
+        run: |
+          python3 --version
+          echo "workflows/:  $(ls workflows/*.json | wc -l) file"
+          echo "workflows/ui/: $(ls workflows/ui/*.json | wc -l) file"
+          python3 -c "import json;d=json.load(open('workflows/node_spec.json'));print(f'node_spec: {len(d[\"nodes\"])} node class')"
+
+      - name: Kiểm tra đồng bộ + tĩnh
+        run: python3 scripts/check_sync.py
+
+      - name: Báo kết quả
+        if: failure()
+        run: |
+          echo "::error::Artifact lệch khỏi nguồn hoặc workflow có lỗi."
+          echo "Chạy tại máy để xem chi tiết và tự sửa:"
+          echo "  python3 scripts/check_sync.py --fix"
+          echo "Hoặc sinh lại thủ công:"
+          echo "  python3 scripts/build_workflows.py"
+          echo "  for f in workflows/flux_q5_*.json; do python3 scripts/api_to_ui.py \"\$f\"; done"
+          echo "  python3 scripts/make_notebook.py"
