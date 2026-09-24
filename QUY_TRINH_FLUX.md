@@ -1,108 +1,121 @@
-# 🎨 Hướng Dẫn Sử Dụng FLUX.1-schnell GGUF (phiên bản tốt nhất dưới 15GB)
+# 🎨 Quy trình FLUX.1-schnell GGUF Q5 trên Colab (bản tối ưu 2026-09)
 
-## 📦 Tổng dung lượng
+Notebook: [`ComfyUI_Colab_WAI_fixed.ipynb`](ComfyUI_Colab_WAI_fixed.ipynb)
+Chạy trên **Colab free T4 16 GB**, model để trên Drive (~12 GB).
 
-| File | Size | Nơi chứa |
+---
+
+## 🚀 Chạy lần đầu (đúng 6 bước)
+
+| Bước | Cell | Việc |
 |---|---|---|
-| `flux1-schnell-Q5_K_S.gguf` (UNET Q5_K_S) | **8.26 GB** | `AI_Models/gguf/` → `models/unet/` |
-| `t5-v1_1-xxl-encoder-Q4_K_M.gguf` (T5-XXL) | **2.9 GB** | `AI_Models/clip/` → `models/clip/` |
-| `clip_l.safetensors` | 250 MB | `AI_Models/clip/` → `models/clip/` |
-| `ae.safetensors` (FLUX VAE) | 320 MB | `AI_Models/vae/` → `models/vae/` |
-| `face_yolov8m.pt` (YOLO mặt) | 52 MB | `ultralytics/bbox/` |
-| `hand_yolov8s.pt` (YOLO tay) | 22 MB | `ultralytics/bbox/` |
-| `foot_anime_yolo11m_v3.pt` (YOLO chân anime) | ~40 MB | `ultralytics/bbox/` |
-| `sam_vit_b_01ec64.pth` (SAM mặt) | 375 MB | `sams/` |
-| **TỔNG MODEL** | **~12.3 GB** | **Dưới 15GB ✅** |
+| 1 | ⚙️ Cell 1 | Nhận GPU → tự chọn PROFILE → mount Drive → clone ComfyUI → cài requirements |
+| 2 | 🧩 Cell 2 | Clone 3 custom node → cài dependency → **kiểm tra import** |
+| 3 | ⬇️ Cell 3 | Tải 7 model (~12 GB, tải song song 3 luồng, có mirror) |
+| 4 | 🧠 Cell 4 | Ghi 5 workflow tối ưu vào `/content/workflows` |
+| 5 | 🚀 Cell 5 | Khởi chạy ComfyUI + tunnel cloudflared |
+| 6 | 🖼 Cell 6 | **Tạo ảnh ngay trong Colab** — không cần mở giao diện |
 
-Chọn Q5_K_S cho UNET (cao nhất có thể mà tổng dưới 15GB) + Q4_K_M cho T5-XXL (text encoder ít nhạy hơn, Q4 đủ dùng). Kết quả: chất lượng gần bằng FP8 nhưng dung lượng chỉ ~12GB, chạy mượt trên **T4 16GB Colab free**.
+Từ lần thứ hai: tick `BO_QUA_MODEL = True` ở Cell 3 (model đã có trên Drive) → chỉ mất ~2 phút.
 
-## 🚀 Cách chạy trên Colab
+Cell 7 = inpaint vẽ tay · Cell 8 = chẩn đoán · Cell 9 = tunnel dự phòng.
 
-1. **Cell 1**: Mount Drive, cài ComfyUI.
-2. **Cell 1B**: Cài Impact Pack, Impact Subpack, **ComfyUI-GGUF** (node load GGUF), YOLO/SAM. Symlink `models/vae`, `models/clip`, `models/unet` (gguf).
-3. **Cell 2**: Tải FLUX Q5_K_S + T5 Q4_K_M + VAE + CLIP-L + YOLO + SAM. (Tick `BO_QUA_MODEL=True` nếu đã tải từ lần chạy trước).
-4. **Cell 3**: Khởi chạy ComfyUI.
-   - **VRAM = `lowvram`** (bắt buộc trên T4 16GB — đã đặt sẵn)
-   - VAE_PREC = `fp16-vae` (nếu OOM đổi sang `cpu-vae`)
-   - ATTENTION = `pytorch`, DISABLE_XFORMERS = True
-5. **Cell 3C**: Tải `workflow_flux_schnell_gguf_toi_uu.json` + copy vào `ComfyUI/input/`.
-6. Mở ComfyUI bằng link cloudflared hiện ra → **Load → workflow_flux_schnell_gguf_toi_uu.json** → **Queue Prompt**.
+---
 
-## ⚙️ Tham số khuyến nghị
+## ⚙️ Tham số (đã đặt sẵn, không cần chỉnh)
 
-### Generate ảnh gốc (KSampler chính)
-| Tham số | Giá trị | Ghi chú |
+### Model
+
+| Vai trò | File | Dung lượng |
 |---|---|---|
-| sampler | `euler` | Schnell distill |
-| scheduler | `simple` | Tốt nhất cho schnell |
-| steps | **4** | Đúng chuẩn schnell |
-| CFG | **1.0** | FLUX schnell yêu cầu CFG=1 |
-| denoise | 1.0 | Generate gốc |
-| size | 1024×1024 | Độ phân giải native của FLUX |
-| seed | random | — |
+| UNET | `flux1-schnell-Q5_K_S.gguf` | 8.26 GB |
+| T5-XXL | `t5-v1_1-xxl-encoder-Q4_K_M.gguf` | 2.9 GB |
+| CLIP-L | `clip_l.safetensors` | 246 MB |
+| VAE | `ae.safetensors` | 335 MB |
+| YOLO mặt | `bbox/face_yolov8m.pt` | 52 MB |
+| YOLO tay | `bbox/hand_yolov8s.pt` | 22 MB |
+| SAM | `sam_vit_b_01ec64.pth` | 375 MB |
 
-### FaceDetailer (mặt)
-- denoise 0.18, steps 6, cfg 1.0, guide_size 512, crop 3.0
-- **Có SAM** (sam_vit_b) cho mask mặt siêu nét, `sam_threshold=0.93`, `sam_dilation=0`
-- `tiled_encode=True, tiled_decode=True` (tránh OOM)
+### KSampler chính
 
-### FaceDetailer (tay)
-- denoise 0.25, steps 6, cfg 1.0, crop 2.8
-- **Không nối SAM** (feather=24 để blend mượt), tiết kiệm VRAM
-- `force_inpaint=True, noise_mask=True`
+| Tham số | Giá trị | Vì sao |
+|---|---|---|
+| steps | **4** | schnell là model chưng cất 4 bước; thêm bước chỉ tốn thời gian |
+| cfg | **1.0** | schnell không dùng CFG → ComfyUI bỏ luôn nhánh negative |
+| sampler | `euler` | — |
+| scheduler | `simple` | — |
+| size | 1024×1024 / 832×1216 / 1216×832 | giữ ~1 MP, bội số của 16 |
 
-### FaceDetailer (chân)
-- denoise 0.30, steps 6, cfg 1.0, crop 3.0
-- **Không nối SAM** (feather=24)
+### FaceDetailer
 
-### Inpaint (Cell 6 Gradio)
-- Upload ảnh + tô đen vùng lỗi
-- denoise **0.5**, steps **8**, cfg **1.0**, grow_mask **12px**
-- Tự động dùng `UnetLoaderGGUF + DualCLIPLoaderGGUF + VAELoader + VAEEncodeForInpaint`
+| Vùng | denoise | steps | crop | feather | SAM |
+|---|---|---|---|---|---|
+| Mặt | 0.22 | 4 | 3.0 | 8 | ✅ `sam_vit_b`, threshold 0.93 |
+| Tay | 0.28 | 4 | 2.5 | 16 | ❌ (tiết kiệm VRAM) |
 
-## 🛠 Các node chính trong workflow
+`guide_size 384`, `max_size 768`, `tiled_encode = tiled_decode = True`.
+
+### Khởi chạy ComfyUI (Cell 5)
 
 ```
-UnetLoaderGGUF → flux1-schnell-Q5_K_S.gguf              → MODEL
-DualCLIPLoaderGGUF → clip_l.safetensors + t5-xxl-Q4_K_M.gguf (type=flux) → CLIP
-VAELoader → ae.safetensors                               → VAE
-EmptyLatentImage 1024×1024                               → LATENT
-CLIPTextEncode (positive/negative) → conditioning
-KSampler (euler/simple/4/1.0) → latent
-VAEDecode → image
-FaceDetailer (mặt, có SAM)
-FaceDetailer (tay, không SAM, feather=24)
-FaceDetailer (chân, không SAM, feather=24)
-SaveImage → FLUX_Q5_schnell_*.png
+--reserve-vram 1.0   --force-fp16   --fp16-vae
+--use-pytorch-cross-attention (SDPA)   --disable-xformers   --preview-method taesd
 ```
 
-## ⏱ Tốc độ ước tính trên T4 16GB (lowvram)
+**Không truyền `--lowvram`** — ComfyUI ≥ 0.3x đã bật Dynamic VRAM mặc định cho GPU NVIDIA,
+`--lowvram` khi đó hầu như vô tác dụng và còn làm chậm. Chỉ thêm khi bạn chọn tay.
 
-| Công đoạn | Thời gian |
+### Inpaint (Cell 7)
+
+`denoise 0.5` · `steps 6` · `grow_mask 12px` · `cfg 1.0`
+
+---
+
+## 💡 Prompt
+
+FLUX hiểu câu mô tả tự nhiên, không cần "tag soup". Viết theo thứ tự:
+**chủ thể → trang phục/bối cảnh → ánh sáng → ống kính → chi tiết cần giữ**.
+
+```
+photorealistic portrait of a young Vietnamese woman, natural skin texture with visible pores,
+soft window light, 85mm lens, shallow depth of field, detailed eyes and hands, five fingers,
+casual linen shirt, warm neutral background, film grain, high detail
+```
+
+**Negative để trống.** Với `cfg = 1.0` thì negative không được dùng; để trống còn giúp T5
+encode nhanh hơn.
+
+Mẹo nhanh:
+- Muốn đổi góc máy: thêm `low angle` / `close-up` / `full body shot`.
+- Muốn cố định nhân vật: giữ nguyên `seed`, chỉ đổi một cụm mô tả mỗi lần.
+- Tay vẫn lỗi: tăng denoise tay `0.28 → 0.35`, hoặc dùng Cell 7 tô lên bàn tay.
+
+---
+
+## 🛠 Xử lý lỗi
+
+| Hiện tượng | Nguyên nhân | Cách sửa |
+|---|---|---|
+| **Không thấy node `UnetLoaderGGUF`** | thiếu package `gguf` | `!pip install -q "gguf>=0.13.0" sentencepiece protobuf`, khởi động lại Cell 5 |
+| **Không thấy `FaceDetailer` / `SAMLoader`** | thiếu `scikit-image` | `!pip install -q scikit-image piexif dill segment-anything matplotlib`, khởi động lại Cell 5 |
+| **`POST /prompt` trả 400** | workflow thiếu input required | Chạy Cell 4 để ghi lại workflow mới; xem lỗi ở `/content/comfyui.log` |
+| **`[Impact Subpack] model file ... is not found`** | `model_name` thiếu tiền tố `bbox/` | Chạy lại Cell 4 (workflow mới đã có tiền tố) |
+| **`CUDA out of memory`** | VRAM không đủ | Giảm size còn 832×832 · `VAE_PREC = cpu-vae` · `PREVIEW = none` · tắt Cell 7 |
+| **`TypeError: resume_download`** | `huggingface_hub` ≥ 1.x đã xoá tham số | Chạy lại Cell 3 của bản notebook này (đã sửa) |
+| **HF bị chặn** | mạng | Tick `USE_HF_MIRROR = True` ở Cell 1 rồi chạy lại |
+| **Tải model đứng im** | rớt mạng giữa chừng | Chạy lại Cell 3 — `curl -C -` tiếp tục từ phần đã tải |
+| **`TAESD previews enabled, but could not find models/vae_approx/taef1_decoder`** | tên file preview sai | Cell 3 của bản này tải đúng `taef1_decoder.pth`; nếu vẫn lỗi, đặt `PREVIEW = auto` |
+| **cloudflared không ra link** | block UDP/QUIC | Chuyển `TUNNEL` sang `cloudflared http2`, hoặc chạy Cell 9 (localtunnel) |
+
+Khi nghi ngờ: **chạy Cell 8** — nó liệt kê đúng các node còn thiếu, model ComfyUI nhìn thấy,
+và VRAM đang dùng.
+
+---
+
+## 📚 Tài liệu kèm theo
+
+| File | Nội dung |
 |---|---|
-| Load model lần đầu | 30-60s |
-| Generate 4 bước 1024×1024 | ~15-20s |
-| FaceDetailer mặt (SAM) | ~5-8s |
-| FaceDetailer tay | ~4-6s |
-| FaceDetailer chân | ~4-6s |
-| **Tổng / ảnh** | **~30-40s** |
-
-## ❌ Xử lý lỗi
-
-- **OOM / CUDA out of memory**:
-  - Chắc chắn `VRAM=lowvram`
-  - Đổi `VAE_PREC = cpu-vae`
-  - `PREVIEW = none`
-  - Đóng tab Gradio inpaint (Cell 6) nếu không dùng — nó cũng chiếm VRAM
-- **Ảnh bị đen / nhiễu**: chưa load xong model, chờ vài giây rồi Queue lại
-- **Mắt/tay/chân còn lỗi**: tăng denoise của FaceDetailer tương ứng (mặt 0.22, tay 0.30, chân 0.35)
-- **T5 hoặc GGUF không hiện trong list**: kiểm tra symlink trong `/content/ComfyUI/models/clip` và `models/unet`, restart Cell 3
-- **HuggingFace bị chặn**: cell sẽ tự thử qua `hf-mirror.com`; nếu vẫn lỗi, vào Colab thêm: `%env HF_ENDPOINT=https://hf-mirror.com` rồi chạy lại Cell 2.
-
-## 💡 Mẹo prompt FLUX
-
-FLUX hiểu tiếng Anh rất tốt, prompt tự nhiên như mô tả sẽ cho kết quả tốt hơn "tag soup" của SDXL.
-
-- **Prompt mẫu**: `masterpiece, best quality, very aesthetic, 1girl, long silver hair, aqua eyes, school uniform, standing under cherry blossoms, soft afternoon sunlight, detailed face, detailed hands, five fingers, full body`
-- **Negative prompt**: FLUX không cần negative phức tạp, có thể để trống. Nếu muốn an toàn thêm: `extra fingers, mutated hands, bad anatomy, blurry, low quality, watermark`.
-- Tỷ lệ: 1024×1024 (vuông), 832×1216 (dọc), 1216×832 (ngang) — giữ bội số của 32, tổng pixel gần 1M là tốt nhất.
+| [`docs/AUDIT_FLUX_2026-09.md`](docs/AUDIT_FLUX_2026-09.md) | Quét quy trình cũ: 12 lỗi + bằng chứng trích từ mã nguồn |
+| [`workflows/README.md`](workflows/README.md) | Sơ đồ node từng pipeline, cách sinh & kiểm tra |
+| [`QUY_TRINH_FLUX.md`](QUY_TRINH_FLUX.md) | File này — hướng dẫn sử dụng |
