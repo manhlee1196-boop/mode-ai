@@ -1,0 +1,2057 @@
+#!/usr/bin/env python3
+"""Sinh `ComfyUI_Colab_WAI_fixed.ipynb` (bản viết lại, tối ưu cho FLUX.1-schnell GGUF).
+
+Chạy:  python3 scripts/make_notebook.py
+Kiểm tra tự động khi chạy:
+  • mọi code cell phải parse được bằng ast (không lỗi cú pháp)
+  • đoạn builder workflow nhúng trong Cell 4 phải GIỐNG HỆT scripts/build_workflows.py
+  • builder đó chạy được và sinh đúng bộ workflow đã validate trong workflows/
+"""
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+OUT = os.path.join(ROOT, "ComfyUI_Colab_WAI_fixed.ipynb")
+BUILDER = os.path.join(HERE, "build_workflows.py")
+PRESETS = os.path.join(HERE, "prompt_presets.py")
+
+START = "# ----------------------------------------------------------------- model (khớp Cell 3)"
+END = "def main() -> int:"
+
+
+def builder_source() -> str:
+    """Đoạn code sinh workflow (không kèm CLI) — nhúng nguyên văn vào notebook."""
+    src = open(BUILDER, encoding="utf-8").read()
+    i = src.index(START)
+    j = src.index(END)
+    head = ('"""Khối sinh workflow — NHÚNG TỪ scripts/build_workflows.py (đừng sửa tay ở đây,'
+            ' hãy sửa file gốc rồi chạy lại scripts/make_notebook.py)."""\n'
+            "from typing import Any, Dict\n\n")
+    return head + src[i:j].rstrip() + "\n"
+
+
+PSTART = "NEGATIVE = "
+PEND = "def main() -> int:"
+
+
+def presets_source() -> str:
+    """Đoạn code thư viện prompt — nhúng nguyên văn vào notebook."""
+    src = open(PRESETS, encoding="utf-8").read()
+    i = src.index(PSTART)
+    j = src.index(PEND)
+    head = ('"""Khối thư viện prompt — NHÚNG TỪ scripts/prompt_presets.py '
+            '(đừng sửa tay ở đây)."""\n\n')
+    return head + src[i:j].rstrip() + "\n"
+
+
+def presets_ns() -> dict:
+    """Chạy khối thư viện prompt để lấy dữ liệu sinh giao diện (dropdown, size...)."""
+    ns: dict = {}
+    exec(compile(presets_source(), "<presets>", "exec"), ns)
+    return ns
+
+
+CELLS: list[tuple[str, str]] = []
+
+
+def md(text: str) -> None:
+    CELLS.append(("markdown", text.strip() + "\n"))
+
+
+def code(text: str) -> None:
+    CELLS.append(("code", text.strip("\n") + "\n"))
+
+
+# =========================================================================== MD mở đầu
+md("""
+# 🎨 ComfyUI Colab — FLUX.1-schnell GGUF Q5 (bản viết lại, tối ưu 2026-09)
+
+Pipeline: **FLUX.1-schnell Q5_K_S (UNET GGUF)** + T5-XXL Q4_K_M + CLIP-L + VAE `ae` —
+tổng ~12 GB model, chạy được trên **Colab free T4 16 GB**.
+
+| Pipeline | Node | Việc nó làm | Thời gian/ảnh 1024² (T4) |
+|---|---|---|---|
+| `flux_q5_fast` | 9 | 4 bước, không detailer | ~15-20 s |
+| `flux_q5_standard` | 13 | 4 bước + sửa mặt (YOLO+SAM) | ~25-35 s |
+| `flux_q5_quality` | 15 | + sửa tay | ~40-55 s |
+| `flux_q5_hires` | 17 | + upscale 1.5× rồi lấy lại chi tiết | ~70-90 s |
+| `flux_q5_inpaint` | 12 | sửa vùng tô trên ảnh có sẵn | ~15-25 s |
+
+**Thứ tự chạy:** Cell 1 → 2 → 3 → 4 → 5, sau đó **Cell 6 (tạo ảnh ngay trong Colab)**
+hoặc mở giao diện ComfyUI qua link cloudflared. Cell 7 = inpaint vẽ tay, Cell 8 = chẩn đoán.
+
+### Bản này sửa gì so với bản cũ (kết quả quét 2026-09-24)
+1. **Thiếu package `gguf`** → node `UnetLoaderGGUF` không load được → *mọi* workflow GGUF chết.
+2. **Thiếu `scikit-image`** → Impact Pack raise ngay khi import → không có `FaceDetailer`/`SAMLoader`.
+3. **Workflow cũ thiếu input required** `wildcard`, `cycle` của `FaceDetailer` → ComfyUI từ chối prompt.
+4. **`UltralyticsDetectorProvider` thiếu tiền tố `bbox/`** → Impact Subpack không tìm ra file YOLO.
+5. **`hf_hub_download(resume_download=True)`** đã bị bỏ từ `huggingface_hub` 1.x → mọi mirror HF lỗi `TypeError`.
+6. **`--lowvram` không còn tác dụng** trên ComfyUI mới (Dynamic VRAM bật mặc định cho NVIDIA) → bỏ, dùng `--reserve-vram`.
+7. Bỏ toàn bộ phần tìm/tải **WAI-illustrious (SDXL 6.9 GB)** — bản này chỉ chạy FLUX, không dùng tới.
+8. Workflow được **nhúng thẳng trong notebook** (bản cũ tải từ repo `caone1196-sketch/t-i-li-u` — link chết).
+9. Detailer giảm `guide_size 512→384`, `max_size 1024→768`, steps `6→4` → nhanh hơn ~35 % mà vẫn đủ nét.
+
+Chi tiết bằng chứng: `docs/AUDIT_FLUX_2026-09.md`. Kiểm tra tĩnh workflow: `python3 scripts/validate_workflows.py`.
+""")
+
+# =========================================================================== CELL 1
+code(r'''
+# @title ⚙️ CELL 1 — GPU + Drive + ComfyUI
+USE_DRIVE = True  # @param {type:"boolean"}
+DRIVE_MODEL_DIR = ""  # @param {type:"string"}
+COMFY_REF = "master"  # @param {type:"string"}
+USE_HF_MIRROR = False  # @param {type:"boolean"}
+
+import os, sys, json, time, subprocess
+
+def log(msg):
+    print(f'[{time.strftime("%H:%M:%S")}] {msg}', flush=True)
+    sys.stdout.flush()
+
+# ---------- 1) GPU ----------
+gpu_name, vram_gb = 'CPU', 0.0
+try:
+    out = subprocess.check_output(
+        ['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader,nounits'],
+        text=True).strip().splitlines()[0]
+    parts = [p.strip() for p in out.split(',')]
+    gpu_name, vram_gb = parts[0], float(parts[1]) / 1024.0
+except Exception as e:
+    log(f'⚠️ Không thấy GPU ({e}) — đổi Runtime → Change runtime type → T4 GPU')
+log(f'GPU: {gpu_name} | VRAM: {vram_gb:.1f} GB')
+
+if vram_gb >= 24:
+    PROFILE = 'big'        # A100/L4-40: giữ model thường trú trong VRAM
+elif vram_gb >= 12:
+    PROFILE = 't4'         # T4/L4 16GB: cấu hình mặc định của notebook này
+else:
+    PROFILE = 'small'
+log(f'PROFILE = {PROFILE}')
+
+if USE_HF_MIRROR:
+    os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+    log('HF_ENDPOINT = https://hf-mirror.com')
+os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
+os.environ.setdefault('HF_HUB_DISABLE_TELEMETRY', '1')
+
+# ---------- 2) Drive (tuỳ chọn) ----------
+drive_ok = False
+if USE_DRIVE:
+    log('Mount Drive (nếu treo >60s: Runtime → Interrupt, tick USE_DRIVE=False, chạy lại)')
+    try:
+        from google.colab import drive
+        drive.mount('/content/drive')
+        drive_ok = True
+        log('Drive OK')
+    except Exception as e:
+        log(f'Drive lỗi ({e}) → dùng /content (mất model khi tắt runtime)')
+
+ROOT = None
+if drive_ok:
+    if DRIVE_MODEL_DIR.strip() and os.path.isdir(DRIVE_MODEL_DIR.strip()):
+        ROOT = DRIVE_MODEL_DIR.strip()
+    else:
+        md = '/content/drive/MyDrive'
+        cands = [os.path.join(md, n) for n in ('AI_Models', 'AI_models', 'ComfyUI_models')]
+        try:
+            sc = os.path.join(md, '.shortcut-targets-by-id')
+            cands += [os.path.join(sc, n) for n in os.listdir(sc)]
+        except Exception:
+            pass
+        for c in cands:
+            if os.path.isdir(c) and (os.path.isdir(os.path.join(c, 'gguf'))
+                                     or os.path.isdir(os.path.join(c, 'checkpoints'))):
+                ROOT = c
+                break
+        ROOT = ROOT or os.path.join(md, 'AI_Models')
+ROOT = ROOT or '/content/AI_Models'
+
+DIRS = {
+    'root': ROOT,
+    'gguf': f'{ROOT}/gguf',                 # UNET GGUF  → models/unet
+    'clip': f'{ROOT}/clip',                 # CLIP-L + T5 GGUF → models/clip
+    'vae':  f'{ROOT}/vae',                  # ae.safetensors
+    'yolo': f'{ROOT}/ultralytics/bbox',     # YOLO mặt/tay
+    'sam':  f'{ROOT}/sams',                 # SAM ViT-B
+    'upscale': f'{ROOT}/upscale_models',
+}
+for d in DIRS.values():
+    os.makedirs(d, exist_ok=True)
+DIRS['profile'] = PROFILE
+DIRS['gpu'] = gpu_name
+DIRS['vram_gb'] = vram_gb
+with open('/content/mode_ai_paths.json', 'w') as f:
+    json.dump(DIRS, f, indent=1)
+log(f'ROOT model = {ROOT}')
+for k, v in DIRS.items():
+    log(f'   {k:8} {v}')
+
+# ---------- 3) ComfyUI ----------
+COMFY = '/content/ComfyUI'
+os.chdir('/content')
+ref = (COMFY_REF or 'master').strip()
+if os.path.isfile(f'{COMFY}/main.py'):
+    log('ComfyUI đã có — bỏ qua clone (xoá /content/ComfyUI nếu muốn cài lại)')
+else:
+    log(f'Clone ComfyUI @ {ref}')
+    r = subprocess.run(['git', 'clone', '--depth', '1', '--branch', ref,
+                        'https://github.com/comfyanonymous/ComfyUI', COMFY])
+    if r.returncode != 0:
+        log('--branch thất bại (có thể là commit SHA) → clone đầy đủ rồi checkout')
+        subprocess.run(['git', 'clone', 'https://github.com/comfyanonymous/ComfyUI', COMFY], check=True)
+        subprocess.run(['git', 'checkout', ref], cwd=COMFY, check=True)
+    subprocess.run(['git', 'log', '-1', '--format=ComfyUI %h %cd %s', '--date=short'], cwd=COMFY)
+
+# ---------- 4) requirements (KHÔNG đụng torch của Colab) ----------
+os.chdir(COMFY)
+subprocess.run("grep -viE '^(torch|torchvision|torchaudio)([=<>!~ ]|$)' requirements.txt "
+               "> /content/req_notorch.txt", shell=True, check=True)
+log('pip install requirements (bỏ torch/torchvision/torchaudio)')
+subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '--no-input',
+                '-r', '/content/req_notorch.txt'])
+
+import torch
+if not torch.cuda.is_available():
+    raise RuntimeError('❌ torch không thấy CUDA — kiểm tra Runtime type là GPU (T4)')
+log(f'PyTorch {getattr(torch, "__version__", "?")} | CUDA {torch.version.cuda} | {torch.cuda.get_device_name(0)}')
+log('✅ Xong Cell 1 → chạy Cell 2')
+''')
+
+# =========================================================================== CELL 2
+code(r'''
+# @title 🧩 CELL 2 — Custom node + dependency (bản đã sửa) + kiểm tra import
+PIN_GGUF = "main"  # @param {type:"string"}
+PIN_IMPACT = "main"  # @param {type:"string"}
+
+import os, sys, re, json, time, subprocess
+
+def log(msg):
+    print(f'[{time.strftime("%H:%M:%S")}] {msg}', flush=True)
+    sys.stdout.flush()
+
+P = json.load(open('/content/mode_ai_paths.json'))
+COMFY = '/content/ComfyUI'
+CN = f'{COMFY}/custom_nodes'
+os.makedirs(CN, exist_ok=True)
+
+def clone(url, folder, ref='main'):
+    path = os.path.join(CN, folder)
+    if os.path.isdir(path) and os.listdir(path):
+        log(f'{folder} đã có — bỏ qua')
+        return
+    log(f'Clone {folder} @ {ref}')
+    r = subprocess.run(['git', 'clone', '--depth', '1', '--branch', ref, url, path])
+    if r.returncode != 0:
+        subprocess.run(['git', 'clone', url, path], check=True)
+
+clone('https://github.com/city96/ComfyUI-GGUF.git', 'ComfyUI-GGUF', PIN_GGUF)
+clone('https://github.com/ltdrdata/ComfyUI-Impact-Pack.git', 'ComfyUI-Impact-Pack', PIN_IMPACT)
+clone('https://github.com/ltdrdata/ComfyUI-Impact-Subpack.git', 'ComfyUI-Impact-Subpack', PIN_IMPACT)
+
+def pip(*args):
+    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '--no-input', *args])
+
+# (a) ComfyUI-GGUF khai báo: gguf>=0.13, sentencepiece, protobuf  ← bản cũ THIẾU, node GGUF chết
+log('pip: gguf + sentencepiece + protobuf (ComfyUI-GGUF)')
+pip('gguf>=0.13.0', 'sentencepiece', 'protobuf')
+
+# (b) Impact Pack khai báo: scikit-image, piexif, dill, segment-anything, matplotlib, transformers
+#     (opencv đã có sẵn trên Colab dưới dạng opencv-contrib-python nên KHÔNG cài lại)
+log('pip: scikit-image + piexif + dill + segment-anything + matplotlib (Impact Pack)')
+pip('scikit-image', 'piexif', 'dill', 'segment-anything', 'matplotlib')
+
+# (c) Impact Subpack cần ultralytics. Cài --no-deps để KHÔNG kéo theo opencv/numpy mới
+#     (tránh phá môi trường torch của Colab), rồi bù các package còn thiếu.
+#     Đường chạy YOLO (inference) của ultralytics chỉ cần ở top-level:
+#     PIL, cv2, numpy, torch, typing_extensions — Colab đã có hết.
+#     thop/polars/nvidia-ml-py/cloudpickle/matplotlib chỉ dùng ở các nhánh
+#     train/val/export, nhưng vẫn cài để code path nào import muộn cũng không vỡ.
+log('pip: ultralytics (--no-deps) + dependency còn thiếu')
+pip('--no-deps', 'ultralytics>=8.3.162')
+pip('typing_extensions', 'ultralytics-thop', 'polars', 'nvidia-ml-py', 'cloudpickle')
+
+# ---------- symlink thư mục model ----------
+pairs = [
+    (f'{COMFY}/models/unet',            P['gguf']),
+    (f'{COMFY}/models/diffusion_models', P['gguf']),
+    (f'{COMFY}/models/clip',            P['clip']),
+    (f'{COMFY}/models/text_encoders',   P['clip']),
+    (f'{COMFY}/models/vae',             P['vae']),
+    (f'{COMFY}/models/ultralytics',     os.path.dirname(P['yolo'])),
+    (f'{COMFY}/models/sams',            P['sam']),
+    (f'{COMFY}/models/upscale_models',  P['upscale']),
+]
+log('Symlink models/')
+for path, dest in pairs:
+    os.makedirs(dest, exist_ok=True)
+    if os.path.islink(path) or os.path.exists(path):
+        subprocess.run(['rm', '-rf', path])
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.symlink(dest, path)
+    log(f'   {path} → {dest}')
+
+# ---------- KIỂM TRA (bản cũ không có bước này nên lỗi âm thầm) ----------
+def pkg_version(dist, module=None):
+    """Lấy version package, KHÔNG BAO GIỜ crash.
+
+    Nhiều package không có thuộc tính __version__ (vd `gguf`) → phải hỏi
+    importlib.metadata (đọc dist-info do pip ghi), rồi mới fallback sang attribute.
+    """
+    try:
+        from importlib.metadata import version, PackageNotFoundError
+        try:
+            return version(dist)
+        except PackageNotFoundError:
+            pass
+    except Exception:
+        pass
+    try:
+        v = getattr(__import__(module or dist), '__version__', None)
+        return str(v) if v else None
+    except Exception:
+        return None
+
+
+def vtuple(v):
+    """'0.19.0rc1' → (0, 19, 0). Chỉ lấy phần số đầu mỗi đoạn, không crash."""
+    out = []
+    for seg in str(v or '').split('.')[:3]:
+        m = re.match(r'\d+', seg.strip())
+        out.append(int(m.group()) if m else 0)
+    return tuple(out) or (0,)
+
+
+# (tên pip, tên module để import, lý do cần)
+CAN = [('gguf', 'gguf', 'ComfyUI-GGUF: UnetLoaderGGUF/DualCLIPLoaderGGUF'),
+       ('sentencepiece', 'sentencepiece', 'tokenizer T5 của GGUF'),
+       ('scikit-image', 'skimage', 'Impact Pack (FaceDetailer) — thiếu là pack raise khi import'),
+       ('piexif', 'piexif', 'Impact Pack'),
+       ('dill', 'dill', 'Impact Pack'),
+       ('segment-anything', 'segment_anything', 'SAMLoader'),
+       ('matplotlib', 'matplotlib', 'Impact Subpack (UltralyticsDetectorProvider)'),
+       ('ultralytics', 'ultralytics', 'Impact Subpack (YOLO)')]
+
+log('Kiểm tra import các package node cần:')
+missing = []
+for dist, mod, why in CAN:
+    try:
+        __import__(mod)
+        log(f'   ✅ {dist} {pkg_version(dist, mod) or "không rõ version"}  ({why})')
+    except Exception as e:
+        missing.append(f'{dist} ({why}): {e}')
+        log(f'   ❌ {dist}: {e}')
+
+if missing:
+    raise RuntimeError('❌ Thiếu dependency, ComfyUI sẽ thiếu node:\n  - ' + '\n  - '.join(missing))
+
+# Phiên bản tối thiểu — chỉ CẢNH BÁO, không dừng cell
+for dist, need in [('gguf', (0, 13))]:
+    v = pkg_version(dist)
+    if v is None:
+        log(f'   ⚠️ Không đọc được version của {dist} — bỏ qua kiểm tra tối thiểu')
+    elif vtuple(v) < need:
+        n = '.'.join(str(x) for x in need)
+        log(f'   ⚠️ {dist} {v} < {n} — nâng cấp: pip install -U "{dist}>={n}"')
+log('✅ Xong Cell 2 → chạy Cell 3')
+''')
+
+# =========================================================================== CELL 3
+code(r'''
+# @title ⬇️ CELL 3 — Tải model (~12 GB, có mirror dự phòng)
+BO_QUA_MODEL = False  # @param {type:"boolean"}
+TAI_TAESD = True  # @param {type:"boolean"}
+SO_LUONG_TAI_SONG_SONG = 3  # @param {type:"integer"}
+
+import os, sys, json, time, shutil, subprocess
+from concurrent.futures import ThreadPoolExecutor
+
+def log(msg):
+    print(f'[{time.strftime("%H:%M:%S")}] {msg}', flush=True)
+    sys.stdout.flush()
+
+P = json.load(open('/content/mode_ai_paths.json'))
+
+def ok(path, minb):
+    return os.path.isfile(path) and os.path.getsize(path) >= minb
+
+def curl(url, path, minb):
+    tmp = path + '.part'
+    cmd = ['curl', '-L', '--fail', '--retry', '5', '--retry-delay', '2', '--retry-all-errors',
+           '-C', '-', '--connect-timeout', '30', '-A', 'Mozilla/5.0', '-o', tmp, url]
+    r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if r.returncode != 0 or not os.path.isfile(tmp):
+        return False
+    if os.path.getsize(tmp) < minb:
+        os.remove(tmp)
+        return False
+    shutil.move(tmp, path)
+    return True
+
+def hf(repo, filename, path, minb):
+    """Tải qua huggingface_hub. KHÔNG dùng resume_download (đã bị bỏ từ hub 1.x → TypeError)."""
+    from huggingface_hub import hf_hub_download
+    local = hf_hub_download(repo_id=repo, filename=filename,
+                            local_dir=os.path.dirname(path) or '.')
+    if not os.path.isfile(local) or os.path.getsize(local) < minb:
+        return False
+    dest = os.path.join(os.path.dirname(path), os.path.basename(local))
+    if os.path.abspath(dest) != os.path.abspath(local):
+        shutil.move(local, dest)
+    return True
+
+def get(label, path, minb, sources, required=True):
+    if ok(path, minb):
+        log(f'✅ {label} đã có ({os.path.getsize(path)/1e6:.0f} MB)')
+        return True
+    log(f'⬇️  {label}')
+    last = None
+    for kind, *rest in sources:
+        try:
+            good = curl(rest[0], path, minb) if kind == 'curl' else hf(rest[0], rest[1], path, minb)
+            if good:
+                log(f'✅ {label} ({os.path.getsize(path)/1e6:.0f} MB)')
+                return True
+        except Exception as e:
+            last = str(e).splitlines()[0][:160]
+            log(f'   mirror lỗi: {last}')
+    msg = f'❌ Không tải được {label}' + (f' — {last}' if last else '')
+    if required:
+        raise RuntimeError(msg + '\n   Thử tick USE_HF_MIRROR ở Cell 1 rồi chạy lại.')
+    log(msg + ' — bỏ qua')
+    return False
+
+def hf_url(repo, fn):
+    return f'https://huggingface.co/{repo}/resolve/main/{fn}?download=true'
+
+def mirror_url(repo, fn):
+    return f'https://hf-mirror.com/{repo}/resolve/main/{fn}?download=true'
+
+TASKS = [
+    ('FLUX UNET Q5_K_S (8.3 GB)', f"{P['gguf']}/flux1-schnell-Q5_K_S.gguf", 7_500_000_000,
+     [('curl', hf_url('city96/FLUX.1-schnell-gguf', 'flux1-schnell-Q5_K_S.gguf')),
+      ('curl', mirror_url('city96/FLUX.1-schnell-gguf', 'flux1-schnell-Q5_K_S.gguf')),
+      ('hf', 'city96/FLUX.1-schnell-gguf', 'flux1-schnell-Q5_K_S.gguf')], True),
+    ('T5-XXL Q4_K_M (2.9 GB)', f"{P['clip']}/t5-v1_1-xxl-encoder-Q4_K_M.gguf", 2_500_000_000,
+     [('curl', hf_url('city96/t5-v1_1-xxl-encoder-gguf', 't5-v1_1-xxl-encoder-Q4_K_M.gguf')),
+      ('curl', mirror_url('city96/t5-v1_1-xxl-encoder-gguf', 't5-v1_1-xxl-encoder-Q4_K_M.gguf')),
+      ('hf', 'city96/t5-v1_1-xxl-encoder-gguf', 't5-v1_1-xxl-encoder-Q4_K_M.gguf')], True),
+    ('CLIP-L (246 MB)', f"{P['clip']}/clip_l.safetensors", 200_000_000,
+     [('curl', hf_url('comfyanonymous/flux_text_encoders', 'clip_l.safetensors')),
+      ('curl', mirror_url('comfyanonymous/flux_text_encoders', 'clip_l.safetensors')),
+      ('hf', 'comfyanonymous/flux_text_encoders', 'clip_l.safetensors')], True),
+    ('FLUX VAE ae (335 MB)', f"{P['vae']}/ae.safetensors", 250_000_000,
+     [('curl', hf_url('Comfy-Org/Lumina_Image_2.0_Repackaged', 'split_files/vae/ae.safetensors')),
+      ('curl', mirror_url('Comfy-Org/Lumina_Image_2.0_Repackaged', 'split_files/vae/ae.safetensors')),
+      ('curl', hf_url('camenduru/FLUX.1-dev', 'ae.safetensors')),
+      ('hf', 'camenduru/FLUX.1-dev', 'ae.safetensors')], True),
+    ('YOLO mặt face_yolov8m (52 MB)', f"{P['yolo']}/face_yolov8m.pt", 40_000_000,
+     [('curl', hf_url('Bingsu/adetailer', 'face_yolov8m.pt')),
+      ('curl', mirror_url('Bingsu/adetailer', 'face_yolov8m.pt')),
+      ('hf', 'Bingsu/adetailer', 'face_yolov8m.pt')], True),
+    ('YOLO tay hand_yolov8s (22 MB)', f"{P['yolo']}/hand_yolov8s.pt", 15_000_000,
+     [('curl', hf_url('Bingsu/adetailer', 'hand_yolov8s.pt')),
+      ('curl', mirror_url('Bingsu/adetailer', 'hand_yolov8s.pt')),
+      ('hf', 'Bingsu/adetailer', 'hand_yolov8s.pt')], True),
+    ('SAM ViT-B (375 MB)', f"{P['sam']}/sam_vit_b_01ec64.pth", 300_000_000,
+     [('curl', 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth'),
+      ('curl', hf_url('segments-ai/sam_vit_b', 'sam_vit_b_01ec64.pth')),
+      ('hf', 'segments-ai/sam_vit_b', 'sam_vit_b_01ec64.pth')], True),
+]
+if TAI_TAESD:
+    # ComfyUI tìm file BẮT ĐẦU bằng tên trong latent_format.taesd_decoder_name
+    # (FLUX.1 = "taef1_decoder", xem comfy/latent_formats.py). Repo HF `madebyollin/taesd`
+    # KHÔNG có file taef1 → lấy từ GitHub hoặc repo mirror.
+    TASKS.append(('TAESD preview FLUX (2.5 MB, xem trước nét khi đang sample)',
+                  '/content/ComfyUI/models/vae_approx/taef1_decoder.pth', 1_500_000,
+                  [('curl', 'https://github.com/madebyollin/taesd/raw/main/taef1_decoder.pth'),
+                   ('curl', hf_url('UmeAiRT/ComfyUI-Auto-Installer-Assets',
+                                   'models/vae_approx/taef1_decoder.safetensors')),
+                   ('hf', 'UmeAiRT/ComfyUI-Auto-Installer-Assets',
+                    'models/vae_approx/taef1_decoder.safetensors')], False))
+
+os.makedirs('/content/ComfyUI/models/vae_approx', exist_ok=True)
+t0 = time.time()
+if not BO_QUA_MODEL:
+    with ThreadPoolExecutor(max_workers=max(1, int(SO_LUONG_TAI_SONG_SONG))) as ex:
+        results = list(ex.map(lambda t: get(*t), TASKS))
+    if not all(results):
+        raise RuntimeError('❌ Có model bắt buộc chưa tải được — xem log phía trên')
+else:
+    log('BO_QUA_MODEL=True — chỉ kiểm tra file đã có')
+    for label, path, minb, _s, req in TASKS:
+        log(('✅ ' if ok(path, minb) else ('❌ ' if req else '⚠️ ')) + label
+            + (f' ({os.path.getsize(path)/1e6:.0f} MB)' if os.path.isfile(path) else ' — KHÔNG CÓ'))
+
+total = 0
+for label, path, minb, _s, _r in TASKS:
+    if os.path.isfile(path):
+        total += os.path.getsize(path)
+log(f'🟢 Tổng model: {total/1e9:.2f} GB — tải trong {time.time()-t0:.0f}s')
+log('✅ Xong Cell 3 → chạy Cell 4')
+''')
+
+# =========================================================================== CELL 4 (nhúng builder)
+code(r'''
+# @title 🧠 CELL 4 — Ghi workflow tối ưu vào máy (nhúng sẵn, không phụ thuộc repo ngoài)
+WORKFLOW_DIR = "/content/workflows"  # @param {type:"string"}
+TAI_BAN_UI_TU_REPO = True  # @param {type:"boolean"}
+
+import os, json, subprocess
+
+# ==== BEGIN BUILD_WORKFLOWS (nhúng từ scripts/build_workflows.py) ====
+__BUILDER__
+# ==== END BUILD_WORKFLOWS ====
+
+# ==== BEGIN PROMPT_PRESETS (nhúng từ scripts/prompt_presets.py) ====
+__PRESETS__
+# ==== END PROMPT_PRESETS ====
+
+os.makedirs(WORKFLOW_DIR, exist_ok=True)
+COMFY = '/content/ComfyUI'
+written = []
+for name, wf in build_all().items():
+    for dest_dir in (WORKFLOW_DIR, f'{COMFY}/input'):
+        os.makedirs(dest_dir, exist_ok=True)
+        path = os.path.join(dest_dir, f'{name}.json')
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(wf, f, ensure_ascii=False, indent=1)
+        written.append(path)
+    print(f'✅ {name}.json ({len(wf)} node)')
+
+# thư viện prompt — Cell 6 đọc để hiện danh sách chọn
+prompts_doc = {'negative': NEGATIVE,
+               'luu_y': [f'cfg=1.0 trên FLUX.1-schnell → negative KHÔNG được dùng'],
+               'anti_patterns': [{'cum': a, 'ly_do': b} for a, b in ANTI_PATTERNS],
+               'presets': PRESETS}
+for dest_dir in (WORKFLOW_DIR, f'{COMFY}/input'):
+    os.makedirs(dest_dir, exist_ok=True)
+    with open(os.path.join(dest_dir, 'prompts.json'), 'w', encoding='utf-8') as f:
+        json.dump(prompts_doc, f, ensure_ascii=False, indent=1)
+print(f'✅ prompts.json ({len(PRESETS)} preset)')
+
+# bản UI (có layout, kéo-thả vào giao diện) — tải từ repo, không có thì bỏ qua
+if TAI_BAN_UI_TU_REPO:
+    REPO = 'manhlee1196-boop/mode-ai'
+    BRANCHES = ['main', 'arena/01a0d3b5-mode-ai']
+    ui_dir = f'{COMFY}/user/default/workflows'
+    os.makedirs(ui_dir, exist_ok=True)
+    for br in BRANCHES:
+        got = 0
+        for name in build_all():
+            url = f'https://raw.githubusercontent.com/{REPO}/{br}/workflows/ui/{name}.json'
+            dest = os.path.join(ui_dir, f'{name}.json')
+            r = subprocess.run(['curl', '-sfL', '--max-time', '20', '-o', dest, url])
+            if r.returncode == 0 and os.path.getsize(dest) > 200:
+                got += 1
+            elif os.path.isfile(dest):
+                os.remove(dest)
+        if got:
+            print(f'✅ {got} workflow bản UI (layout) từ branch {br} → {ui_dir}')
+            break
+    else:
+        print('ℹ️ Không tải được bản UI từ repo — dùng bản API (giao diện ComfyUI mới '
+              'vẫn mở được, chỉ không có layout) hoặc dùng Cell 6.')
+
+print('\nCách dùng:')
+print('  • Cell 6: tạo ảnh ngay trong Colab, không cần mở giao diện')
+print('  • Hoặc mở link ComfyUI → Workflow → Open → chọn file trong /content/workflows')
+print('✅ Xong Cell 4 → chạy Cell 5')
+''')
+
+# =========================================================================== CELL 5
+code(r'''
+# @title 🚀 CELL 5 — Khởi chạy ComfyUI + tunnel
+PORT = 8188  # @param {type:"integer"}
+TUNNEL = "cloudflared http2"  # @param ["cloudflared http2", "cloudflared quic", "không tunnel"]
+VRAM_MODE = "Mặc định — Dynamic VRAM (khuyến nghị)"  # @param ["Mặc định — Dynamic VRAM (khuyến nghị)", "lowvram", "normalvram", "highvram", "novram", "cpu"]
+RESERVE_VRAM_GB = 1.0  # @param {type:"slider", min:0.0, max:4.0, step:0.1}
+FORCE_FP16 = True  # @param {type:"boolean"}
+VAE_PREC = "Mặc định"  # @param ["Mặc định", "fp32-vae", "fp16-vae", "cpu-vae"]
+ATTENTION = "pytorch (SDPA)"  # @param ["pytorch (SDPA)", "sage", "flash", "Mặc định"]
+PREVIEW = "taesd"  # @param ["taesd", "auto", "latent2rgb", "none"]
+CACHE_LRU = 0  # @param {type:"integer"}
+FAST_FP16_ACCUM = False  # @param {type:"boolean"}
+EXTRA_ARGS = ""  # @param {type:"string"}
+
+import os, re, sys, json, time, socket, shutil, subprocess
+
+def log(msg):
+    print(f'[{time.strftime("%H:%M:%S")}] {msg}', flush=True)
+    sys.stdout.flush()
+
+COMFY = '/content/ComfyUI'
+P = json.load(open('/content/mode_ai_paths.json'))
+assert os.path.isfile(f'{COMFY}/main.py'), '❌ Chạy Cell 1 trước'
+
+log('Dừng tiến trình cũ')
+os.system('pkill -f "python.*main.py" >/dev/null 2>&1 || true')
+os.system('pkill -f cloudflared >/dev/null 2>&1 || true')
+time.sleep(2)
+
+cmd = [sys.executable, 'main.py', '--listen', '0.0.0.0', '--port', str(int(PORT)),
+       '--preview-method', PREVIEW,
+       '--output-directory', f'{COMFY}/output',
+       '--input-directory', f'{COMFY}/input',
+       '--temp-directory', f'{COMFY}/temp',
+       '--cuda-device', '0',
+       '--enable-cors-header', '*',
+       '--disable-xformers']
+
+# ComfyUI >= 0.3x bật Dynamic VRAM mặc định cho NVIDIA; --lowvram lúc đó bị bỏ qua.
+# Chỉ thêm cờ vram khi người dùng explicitly chọn.
+vram_map = {'lowvram': '--lowvram', 'normalvram': '--normalvram', 'highvram': '--highvram',
+            'novram': '--novram', 'cpu': '--cpu'}
+for k, flag in vram_map.items():
+    if VRAM_MODE.startswith(k):
+        cmd.append(flag)
+if RESERVE_VRAM_GB and RESERVE_VRAM_GB > 0 and not VRAM_MODE.startswith('cpu'):
+    cmd += ['--reserve-vram', str(float(RESERVE_VRAM_GB))]
+if FORCE_FP16:
+    cmd.append('--force-fp16')
+if VAE_PREC == 'fp16-vae':
+    # comfy/sd.py:1101 — VAE bị cast TOÀN BỘ sang dtype này. ComfyUI chỉ chọn fp16 khi
+    # được ép: working_dtypes của VAE chuẩn là [bf16, fp32] (sd.py:515), nên mặc định
+    # trên T4 (không có bf16) là fp32. Ép fp16 → mất mantissa khi decode → ảnh mờ/loãng.
+    log('⚠️ fp16-vae: VAE chạy ở fp16 → ảnh FLUX hay bị mờ, loãng màu. '
+        'Chỉ nên dùng khi thật sự thiếu VRAM (tiết kiệm ~1.5 GB).')
+if VAE_PREC in ('fp16-vae', 'fp32-vae', 'cpu-vae'):
+    cmd.append('--' + VAE_PREC)
+att_map = {'pytorch (SDPA)': '--use-pytorch-cross-attention',
+           'sage': '--use-sage-attention', 'flash': '--use-flash-attention'}
+if ATTENTION in att_map:
+    cmd.append(att_map[ATTENTION])
+if int(CACHE_LRU) > 0:
+    cmd += ['--cache-lru', str(int(CACHE_LRU))]
+if FAST_FP16_ACCUM:
+    cmd += ['--fast', 'fp16_accumulation']
+if EXTRA_ARGS.strip():
+    cmd += EXTRA_ARGS.strip().split()
+
+log('Lệnh: ' + ' '.join(cmd))
+logf = open('/content/comfyui.log', 'w')
+proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, cwd=COMFY)
+open('/content/comfy.pid', 'w').write(str(proc.pid))
+
+def port_open():
+    try:
+        with socket.create_connection(('127.0.0.1', int(PORT)), timeout=1):
+            return True
+    except OSError:
+        return False
+
+ok = False
+for i in range(240):
+    time.sleep(1)
+    if proc.poll() is not None:
+        os.system('tail -40 /content/comfyui.log')
+        raise RuntimeError('❌ ComfyUI thoát khi khởi động — xem log ở trên')
+    if port_open():
+        ok = True
+        break
+    if i % 20 == 19:
+        log(f'  ...đợi {i+1}s')
+        os.system('tail -2 /content/comfyui.log')
+if not ok:
+    os.system('tail -40 /content/comfyui.log')
+    raise RuntimeError('❌ Quá 240s chưa mở cổng')
+log(f'✅ ComfyUI đang chạy cổng {PORT}')
+
+url = None
+if TUNNEL.startswith('cloudflared'):
+    if not shutil.which('cloudflared'):
+        log('Cài cloudflared')
+        os.system('wget -q -c https://github.com/cloudflare/cloudflared/releases/latest/download/'
+                  'cloudflared-linux-amd64.deb -O /tmp/cloudflared.deb')
+        os.system('dpkg -i /tmp/cloudflared.deb >/dev/null 2>&1')
+    proto = 'http2' if 'http2' in TUNNEL else 'quic'
+    cff = open('/content/cloudflared.log', 'w')
+    cf = subprocess.Popen(['cloudflared', 'tunnel', '--url', f'http://127.0.0.1:{int(PORT)}',
+                           '--http-host-header', f'127.0.0.1:{int(PORT)}', '--protocol', proto],
+                          stdout=cff, stderr=subprocess.STDOUT)
+    for _ in range(90):
+        time.sleep(1)
+        m = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com',
+                      open('/content/cloudflared.log', errors='ignore').read())
+        if m:
+            url = m.group(0).rstrip('/')
+            break
+    if url:
+        open('/content/comfy_url.txt', 'w').write(url)
+
+print('\n' + '=' * 64)
+if url:
+    print('🎨 COMFYUI — copy link, DÁN vào tab mới (đừng bấm trong Colab):\n')
+    print('   ' + url)
+else:
+    print(f'⚠️ Chưa có link tunnel. Local: http://127.0.0.1:{int(PORT)} (dùng Cell 5 localtunnel nếu cần)')
+print('=' * 64)
+print('Giờ chạy Cell 6 để tạo ảnh ngay trong Colab, hoặc Cell 8 để chẩn đoán node.')
+''')
+
+# =========================================================================== CELL 6
+code(r'''
+# @title 🖼 CELL 6 — Tạo ảnh ngay trong Colab (headless, không cần mở giao diện)
+# ╔═════════════════════ 1) CHỌN CẢNH ═════════════════════╗
+PRESET = "chan_dung_can"  # @param __PRESET_IDS__
+PIPELINE = "flux_q5_standard"  # @param ["flux_q5_fast", "flux_q5_standard", "flux_q5_quality", "flux_q5_hires", "flux_q5_inpaint"]
+
+# ╔═════════════════════ 2) PROMPT DƯƠNG ═══════════════════╗
+PROMPT = "Close-up portrait of a young Vietnamese woman, natural skin with visible pores, soft window light from the left, 85mm lens, shallow depth of field, head and shoulders framing, plain warm backdrop, subtle film grain"  # @param {type:"string"}
+THEM_VAO_PROMPT = ""  # @param {type:"string"}
+
+# ╔═════════════════════ 3) NEGATIVE PROMPT ═════════════════╗
+# ⚠️ comfy/samplers.py:610 — ở cfg = 1.0 ComfyUI BỎ HẲN nhánh negative,
+# nên muốn negative này có tác dụng phải nâng CFG (ô dưới) lên 2.0 trở lên.
+NEG_MODE = "theo preset"  # @param __NEG_MODES__
+NEGATIVE_PROMPT = ""  # @param {type:"string"}
+CFG = 1.0  # @param {type:"slider", min:1, max:5, step:0.5}
+TU_DONG_BAT_CFG = True  # @param {type:"boolean"}
+
+# ╔═════════════════════ 4) SAMPLING ════════════════════════╗
+STEPS = 4  # @param {type:"slider", min:1, max:20, step:1}
+BC_SUA_CHI_TIET = 4  # @param {type:"slider", min:2, max:12, step:1}
+SAMPLER = "euler"  # @param ["euler", "euler_ancestral", "heun", "dpmpp_2m", "dpmpp_2m_sde", "lcm", "ddim", "uni_pc"]
+SCHEDULER = "simple"  # @param ["simple", "normal", "beta", "karras", "sgm_uniform", "exponential"]
+SEED = -1  # @param {type:"integer"}
+SO_ANH = 1  # @param {type:"slider", min:1, max:4, step:1}
+
+# ╔═════════════════════ 5) KHUNG HÌNH & ĐẦU RA ═════════════╗
+SIZE = "theo preset (khuyên dùng)"  # @param __SIZE_IDS__
+SAC_NET = 0.0  # @param {type:"slider", min:0, max:1.5, step:0.05}
+TEN_FILE = "flux/anh"  # @param {type:"string"}
+NHIEU_PROMPT = ""  # @param {type:"string"}
+LUU_VAO_DRIVE = False  # @param {type:"boolean"}
+
+import os, re, json, time, random
+import requests
+from PIL import Image
+from IPython.display import display
+
+COMFY = 'http://127.0.0.1:8188'
+WORKFLOW_DIR = '/content/workflows'
+OUT = '/content/ComfyUI/output'
+IN_DIR = '/content/ComfyUI/input'
+TUY_CHON = "(tự viết prompt ở dưới)"
+SIZE_THEO_PRESET = "theo preset (khuyên dùng)"
+SIZES = __SIZES_DICT__
+
+
+def _doc():
+    """Đọc thư viện prompt do Cell 4 sinh ra (presets + negative + cảnh báo)."""
+    try:
+        with open(os.path.join(WORKFLOW_DIR, 'prompts.json'), encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print('⚠️ Không đọc được prompts.json (%s) — bỏ qua preset/negative có sẵn' % e)
+        return {}
+
+
+LIB = _doc()
+PRESETS = {p['id']: p for p in LIB.get('presets', [])}
+NEG_LIB = LIB.get('neg_library', {})
+CANH_BAO = LIB.get('canh_bao', [])
+CFG_NEG = float(LIB.get('cfg_neg_hieu_luc', 2.0))
+STEPS_CFG = int(LIB.get('steps_toi_thieu_cfg', 8))
+GIOI_HAN_TU = int(LIB.get('gioi_han_tu', 60))
+
+
+def _key(nhan):
+    """'tay - lỗi bàn tay' → 'tay' (đầu nhãn chính là id khối negative)."""
+    return nhan.split(' - ')[0].strip().split(' ')[0]
+
+
+def _noi(*cac_doan):
+    """Ghép các đoạn negative, bỏ cụm trùng (giữ thứ tự, không phá dấu phẩy)."""
+    out, seen = [], set()
+    for doan in cac_doan:
+        for cum in str(doan or '').split(','):
+            cum = cum.strip().rstrip('.')
+            if cum and cum.lower() not in seen:
+                seen.add(cum.lower())
+                out.append(cum)
+    return ', '.join(out)
+
+
+def gop_negative(mode, tu_viet, preset_doc):
+    """Trả về chuỗi negative theo NEG_MODE (đọc danh sách từ prompts.json)."""
+    key = _key(mode)
+    if key == 'khong':
+        return ''
+    if key == 'tu_viet':
+        return _noi(tu_viet)
+    if key == 'theo':
+        return _noi(preset_doc.get('negative', ''), tu_viet)
+    if key == 'tat_ca':
+        return _noi(*list(NEG_LIB.values()), tu_viet)
+    return _noi(NEG_LIB.get(key, ''), tu_viet)
+
+
+def apply_preset(preset_id, prompt, pipeline, them=''):
+    """Chọn preset → preset thắng (prompt + pipeline + size + negative)."""
+    them = (them or '').strip()
+    doc = PRESETS.get(preset_id)
+    if preset_id == TUY_CHON or doc is None:
+        if preset_id != TUY_CHON:
+            print('⚠️ Không thấy preset "%s" — giữ tuỳ chọn của bạn' % preset_id)
+        pos = ('%s, %s' % (prompt.rstrip(' ,'), them)) if them else prompt
+        return pos, pipeline, None, {}
+    print('📋 %s' % doc['ten'])
+    print('   rủi ro: %s  |  %s @ %sx%s' % (
+        doc['rui_ro'], doc['pipeline'], doc['size'][0], doc['size'][1]))
+    print('   %s' % doc['ghi_chu'])
+    pos = ('%s, %s' % (doc['prompt'].rstrip(' ,'), them)) if them else doc['prompt']
+    return pos, doc['pipeline'], (int(doc['size'][0]), int(doc['size'][1])), dict(doc)
+
+
+def chon_size(nhan, preset_size, mac_dinh=(832, 1216)):
+    if nhan != SIZE_THEO_PRESET and nhan in SIZES:
+        return tuple(SIZES[nhan])
+    return tuple(preset_size) if preset_size else mac_dinh
+
+
+def xu_ly_cfg(negative, cfg, steps, tu_dong):
+    """cfg = 1.0 → negative bị bỏ qua (samplers.py:610). Tự nâng nếu được phép.
+
+    Chỉ nâng cfg, KHÔNG tự đổi số bước: schnell được chưng cất cho đúng 4 bước,
+    chạy 8 bước trên lịch 4 bước có thể làm ảnh mềm/cháy. Muốn thử thì tự chỉnh
+    ô STEPS và so bằng Cell 8b (đo độ nét).
+    """
+    cfg, steps, note = float(cfg), int(steps), ''
+    if negative and cfg <= 1.0:
+        if tu_dong:
+            cfg = CFG_NEG
+            note = ('đang dùng negative → tự nâng cfg 1.0 → %.1f (vẫn giữ %d bước). '
+                    'Muốn nhanh lại: NEG_MODE = "khong - không dùng negative".' % (cfg, steps))
+        else:
+            note = ('⚠️ cfg=1.0 → ComfyUI BỎ QUA negative (comfy/samplers.py:610). '
+                    'Hãy nâng CFG hoặc bật TU_DONG_BAT_CFG.')
+    if negative and cfg > 1.0 and steps > 4:
+        note = ((note + ' ') if note else '') + (
+            '⚠️ %d bước trên model chưng cất 4 bước có thể làm ảnh mềm/cháy — '
+            'hạ về 4 hoặc so bằng Cell 8b.' % steps)
+    return cfg, steps, note
+
+
+def kiem_tra(prompt, w, h, cfg, steps, negative):
+    """Quét prompt trước khi chạy — phát hiện cụm hay gây lỗi, đỡ mất một lượt generate."""
+    low = (prompt or '').lower()
+    for cb in CANH_BAO:
+        if cb['cum'] in low:
+            print('⚠️ Prompt có "%s": %s' % (cb['cum'], cb['ly_do']))
+    n_tu = len(re.findall(r"[A-Za-z0-9'-]+", prompt or ''))
+    if n_tu > GIOI_HAN_TU:
+        print('⚠️ Prompt %d từ (> %d): ý chính bị loãng, nên cắt bớt.' % (n_tu, GIOI_HAN_TU))
+    mp = w * h / 1e6
+    if not (0.45 <= mp <= 1.7):
+        print('⚠️ %dx%d = %.2f MP, xa ~1MP → schnell hay sinh lỗi cấu trúc.' % (w, h, mp))
+    if negative and cfg <= 1.0:
+        print('⚠️ Có negative mà cfg=1.0 → negative KHÔNG được đọc.')
+    if negative and cfg > 1.0:
+        print('✅ Negative đang BẬT (cfg=%.1f > 1.0, %d từ).' % (
+            cfg, len(negative.split(','))))
+
+
+def _health():
+    try:
+        return requests.get('%s/system_stats' % COMFY, timeout=5).status_code == 200
+    except Exception:
+        return False
+
+
+def _nodes(wf, class_type):
+    return [k for k, v in wf.items() if v.get('class_type') == class_type]
+
+
+def _pos_neg(wf):
+    """Node 5 = prompt dương, node 6 = negative (đúng quy ước builder).
+
+    Không đoán theo độ dài text: negative dài hơn prompt sẽ làm heuristic cũ bị ngược.
+    """
+    enc = _nodes(wf, 'CLIPTextEncode')
+    if '5' in enc:
+        return '5', ('6' if '6' in enc else None)
+    enc = sorted(enc, key=lambda k: -len(str(wf[k]['inputs'].get('text', ''))))
+    return (enc[0] if enc else None), (enc[1] if len(enc) > 1 else None)
+
+
+def _chen_sac_net(wf, alpha, bat_dau=90):
+    """Chèn node ImageSharpen trước mỗi SaveImage (alpha <= 0 → không chèn).
+
+    ImageSharpen làm unsharp mask: kernel = gaussian * -(alpha*10) rồi chỉnh tâm để
+    tổng = 1 (comfy_extras/nodes_post_processing.py). alpha=1.0 đã rất mạnh, 0.2-0.4
+    là mức "vừa đủ". Đây là vá triệu chứng — nếu ảnh mờ, đo bằng Cell 8b để tìm
+    NGUYÊN NHÂN (VAE fp16, cfg/steps,...) trước khi dùng cái này.
+    """
+    if not alpha or float(alpha) <= 0:
+        return wf
+    for i, nid in enumerate(_nodes(wf, 'SaveImage')):
+        src = wf[nid]['inputs'].get('images')
+        if not src:
+            continue
+        new_id = bat_dau + i
+        while str(new_id) in wf:
+            new_id += 1
+        wf[str(new_id)] = {'class_type': 'ImageSharpen', 'inputs': {
+            'image': [src[0], src[1]],
+            'sharpen_radius': 1, 'sigma': 1.0, 'alpha': float(alpha)}}
+        wf[nid]['inputs']['images'] = [str(new_id), 0]
+    return wf
+
+
+def prepare(pipeline, prompt, w, h, seed, negative='', cfg=1.0, steps=4, bc_sua=4,
+            sampler='euler', scheduler='simple', ten_file='flux/anh', batch=1,
+            sac_net=0.0):
+    path = os.path.join(WORKFLOW_DIR, '%s.json' % pipeline)
+    if not os.path.isfile(path):
+        raise FileNotFoundError('%s không có — chạy Cell 4 trước' % path)
+    wf = json.load(open(path, encoding='utf-8'))
+
+    for nid in _nodes(wf, 'LoadImage'):
+        name = wf[nid]['inputs'].get('image', '')
+        if not os.path.isfile(os.path.join(IN_DIR, name)):
+            raise FileNotFoundError(
+                '❌ %s cần file %s/%s — hãy upload ảnh + mask vào đó, '
+                'hoặc dùng Cell 7 (vẽ mask bằng chuột, tự upload).'
+                % (pipeline, IN_DIR, name))
+
+    pos, neg = _pos_neg(wf)
+    if pos:
+        wf[pos]['inputs']['text'] = prompt
+    if neg:
+        wf[neg]['inputs']['text'] = negative
+
+    for nid in _nodes(wf, 'EmptyLatentImage'):
+        wf[nid]['inputs']['width'] = int(w)
+        wf[nid]['inputs']['height'] = int(h)
+        if 'batch_size' in wf[nid]['inputs']:
+            wf[nid]['inputs']['batch_size'] = int(batch)
+
+    for i, nid in enumerate(sorted(_nodes(wf, 'KSampler'), key=int)):
+        wf[nid]['inputs'].update(
+            seed=int(seed) + i, steps=int(steps), cfg=float(cfg),
+            sampler_name=sampler, scheduler=scheduler)
+    # FaceDetailer chạy trên vùng crop nhỏ: bước riêng (BC_SUA_CHI_TIET), nhưng cfg
+    # theo ô CFG để negative có tác dụng cả ở bước sửa mặt / sửa tay.
+    for i, nid in enumerate(sorted(_nodes(wf, 'FaceDetailer'), key=int)):
+        wf[nid]['inputs'].update(
+            seed=int(seed) + 100 + i, steps=int(bc_sua), cfg=float(cfg),
+            sampler_name=sampler, scheduler=scheduler)
+
+    for nid in _nodes(wf, 'SaveImage'):
+        wf[nid]['inputs']['filename_prefix'] = ten_file
+    return _chen_sac_net(wf, sac_net)
+
+
+def run(wf, timeout=900):
+    r = requests.post('%s/prompt' % COMFY, json={'prompt': wf}, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError('ComfyUI từ chối prompt (HTTP %s):\n%s'
+                           % (r.status_code, json.dumps(r.json(), ensure_ascii=False)[:1500]))
+    pid = r.json()['prompt_id']
+    print('📤 prompt_id=%s' % pid)
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        time.sleep(2)
+        try:
+            h = requests.get('%s/history/%s' % (COMFY, pid), timeout=10).json()
+        except Exception:
+            continue
+        if pid in h:
+            st = h[pid].get('status', {})
+            if st.get('status_str') == 'error':
+                raise RuntimeError('ComfyUI báo lỗi khi chạy: %s'
+                                   % json.dumps(st, ensure_ascii=False)[:1200])
+            files = []
+            for node_out in h[pid].get('outputs', {}).values():
+                for im in node_out.get('images', []):
+                    if im.get('type') != 'output':
+                        continue
+                    files.append(os.path.join(OUT, im.get('subfolder', ''), im['filename']))
+            return [f for f in files if os.path.isfile(f)]
+    raise TimeoutError('Quá %ds chưa xong — xem /content/comfyui.log' % timeout)
+
+
+def tom_tat(cfg_hinh):
+    print('=' * 68)
+    for k, v in cfg_hinh.items():
+        print('  %-14s %s' % (k, v))
+    print('=' * 68)
+
+
+def generate(prompt=PROMPT, preset=PRESET, pipeline=PIPELINE, size=SIZE,
+             them=THEM_VAO_PROMPT, neg_mode=NEG_MODE, negative_tu_viet=NEGATIVE_PROMPT,
+             cfg=CFG, tu_dong_cfg=TU_DONG_BAT_CFG, steps=STEPS, bc_sua=BC_SUA_CHI_TIET,
+             sampler=SAMPLER, scheduler=SCHEDULER, seed=SEED, n=SO_ANH,
+             ten_file=TEN_FILE, nhieu=NHIEU_PROMPT, sac_net=SAC_NET,
+             show=True, luu_drive=LUU_VAO_DRIVE):
+    """Tạo ảnh. Mọi ô ở trên đều có thể truyền đè khi gọi bằng code."""
+    prompt, pipeline, preset_size, doc = apply_preset(preset, prompt, pipeline, them)
+    w, h = chon_size(size, preset_size)
+    negative = gop_negative(neg_mode, negative_tu_viet, doc)
+    cfg, steps, note = xu_ly_cfg(negative, cfg, steps, tu_dong_cfg)
+    kiem_tra(prompt, w, h, cfg, steps, negative)
+
+    ds = [d.strip() for d in str(nhieu or '').splitlines() if d.strip()]
+    ds_prompt = ds if ds else [prompt]
+
+    tom_tat({
+        'pipeline': pipeline,
+        'kich_thuoc': '%dx%d' % (w, h),
+        'cfg / steps': '%.1f / %d' % (cfg, steps),
+        'sampler': '%s + %s' % (sampler, scheduler),
+        'sua chi tiet': '%d bước' % int(bc_sua),
+        'sac net': ('%.2f (đang vá mờ — nên tìm nguyên nhân bằng Cell 8b)' % float(sac_net))
+                   if float(sac_net) > 0 else 'tắt',
+        'negative': (negative[:68] + '...') if len(negative) > 68 else (negative or '(không)'),
+        'so anh': '%d prompt x %d' % (len(ds_prompt), int(n)),
+    })
+    if note:
+        print('ℹ️ %s' % note)
+    if int(n) > 2:
+        print('⚠️ %d ảnh liên tiếp trên T4 16GB — nếu báo OOM, hạ xuống 1-2.' % int(n))
+
+    if not _health():
+        raise RuntimeError('❌ ComfyUI chưa chạy — chạy Cell 5 trước')
+
+    ket_qua = []
+    for pi, p_txt in enumerate(ds_prompt):
+        for i in range(int(n)):
+            s = int(seed) + i if int(seed) >= 0 else random.randint(0, 2 ** 31 - 1)
+            t0 = time.time()
+            wf = prepare(pipeline, p_txt, w, h, s, negative, cfg, steps, bc_sua,
+                         sampler, scheduler, ten_file, sac_net=sac_net)
+            files = run(wf)
+            for f in files:
+                ket_qua.append(f)
+                if show:
+                    display(Image.open(f))
+            print('  [%d/%d] ảnh %d/%d: %d file, %.1fs, seed=%d'
+                  % (pi + 1, len(ds_prompt), i + 1, int(n), len(files), time.time() - t0, s))
+
+    try:
+        with open('/content/lan_chay_cuoi.json', 'w', encoding='utf-8') as f:
+            json.dump({'prompt': ds_prompt, 'negative': negative, 'cfg': cfg,
+                       'steps': steps, 'bc_sua_chi_tiet': int(bc_sua),
+                       'sampler': sampler, 'scheduler': scheduler, 'seed': seed,
+                       'size': [w, h], 'pipeline': pipeline, 'preset': preset,
+                       'anh': ket_qua}, f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+
+    if luu_drive and os.path.isdir('/content/drive/MyDrive'):
+        import shutil
+        dest = '/content/drive/MyDrive/FLUX_output'
+        os.makedirs(dest, exist_ok=True)
+        for f in ket_qua:
+            shutil.copy2(f, dest)
+        print('💾 Đã copy %d ảnh vào %s' % (len(ket_qua), dest))
+    return ket_qua
+
+
+def nhanh(prompt, n=1, **kw):
+    """Một dòng lấy ảnh nhanh: pipeline fast, 1024x1024."""
+    return generate(prompt=prompt, preset=TUY_CHON, pipeline='flux_q5_fast',
+                    size='1024x1024 (vuông, ~1MP)', n=n, **kw)
+
+
+def dep(prompt, n=1, **kw):
+    """Một dòng lấy ảnh đẹp: quality, sửa cả mặt và tay."""
+    return generate(prompt=prompt, preset=TUY_CHON, pipeline='flux_q5_quality',
+                    size='832x1216 (dọc, ~1MP)', n=n, **kw)
+
+
+anh = generate()
+print()
+print('📝 Prompt: ' + (PROMPT if len(PROMPT) <= 120 else PROMPT[:120] + '...'))
+print('✅ %d ảnh trong %s' % (len(anh), OUT))
+print('💡 Gọi lại nhanh: nhanh("prompt của bạn")  ·  dep("prompt của bạn", n=2)')
+''')
+
+# =========================================================================== CELL 7
+code(r'''
+# @title 🖌 CELL 7 — Inpaint vẽ tay (Gradio, dùng flux_q5_inpaint)
+DENOISE = 0.5  # @param {type:"slider", min:0.2, max:0.85, step:0.05}
+STEPS = 6  # @param {type:"integer"}
+GROW_MASK = 12  # @param {type:"integer"}
+
+import os, sys, json, time, uuid, random, subprocess, requests
+import numpy as np
+from PIL import Image
+
+try:
+    import gradio as gr
+except ImportError:
+    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'gradio'])
+    import gradio as gr
+
+sys.path.insert(0, '/content/workflows')
+COMFY = 'http://127.0.0.1:8188'
+OUT = '/content/ComfyUI/output'
+WF_INPAINT = '/content/workflows/flux_q5_inpaint.json'
+
+def latest_output():
+    if not os.path.isdir(OUT):
+        return None
+    fs = [os.path.join(OUT, f) for f in os.listdir(OUT)
+          if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))]
+    return max(fs, key=os.path.getmtime) if fs else None
+
+def split_bg_mask(value):
+    """Tách (ảnh nền, mask) từ ImageEditor/Sketchpad/ImageMask của Gradio 3/4/5."""
+    def to_img(x, mode):
+        if isinstance(x, dict) and 'name' in x:
+            return Image.open(x['name']).convert(mode)
+        if isinstance(x, str) and os.path.isfile(x):
+            return Image.open(x).convert(mode)
+        if hasattr(x, 'convert'):
+            return x.convert(mode)
+        return Image.fromarray(np.array(x)).convert(mode)
+
+    if isinstance(value, dict):
+        if 'background' in value:                      # Gradio 5 ImageEditor
+            bg = to_img(value['background'], 'RGB')
+            layers = value.get('layers') or []
+            if not layers:
+                return bg, None
+            alpha = to_img(layers[0], 'RGBA').split()[-1]
+            return bg, alpha
+        if 'image' in value and 'mask' in value:       # Gradio 3/4
+            return to_img(value['image'], 'RGB'), to_img(value['mask'], 'L')
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return to_img(value[0], 'RGB'), to_img(value[1], 'L')
+    if value is not None and hasattr(value, 'convert'):
+        return value.convert('RGB'), None
+    return None, None
+
+def upload(path):
+    with open(path, 'rb') as f:
+        r = requests.post(f'{COMFY}/upload/image', files={'image': f},
+                          data={'overwrite': 'true', 'type': 'input', 'subfolder': ''},
+                          timeout=60)
+    r.raise_for_status()
+    return r.json()['name']
+
+def do_inpaint(editor, prompt, denoise, steps, grow, seed):
+    if editor is None:
+        latest = latest_output()
+        if not latest:
+            return None, '❌ Chưa có ảnh: upload ảnh hoặc chạy Cell 6 trước'
+        bg, mask = Image.open(latest).convert('RGB'), None
+    else:
+        bg, mask = split_bg_mask(editor)
+    if bg is None:
+        return None, '❌ Không đọc được ảnh'
+    if mask is None or float(np.mean(np.array(mask) > 128)) < 0.005:
+        return None, '❌ Chưa tô mask — dùng cọ tô lên vùng cần sửa'
+    if mask.size != bg.size:
+        mask = mask.resize(bg.size)
+
+    rid = uuid.uuid4().hex[:8]
+    img_p, msk_p = f'/tmp/inp_{rid}.png', f'/tmp/msk_{rid}.png'
+    bg.save(img_p)
+    mask.convert('RGB').save(msk_p)
+    img_name, msk_name = upload(img_p), upload(msk_p)
+
+    wf = json.load(open(WF_INPAINT, encoding='utf-8'))
+    wf['4']['inputs']['image'] = img_name
+    wf['5m']['inputs']['image'] = msk_name
+    wf['9e']['inputs']['grow_mask_by'] = int(grow)
+    wf['7']['inputs']['denoise'] = float(denoise)
+    wf['7']['inputs']['steps'] = int(steps)
+    wf['7']['inputs']['seed'] = int(seed) if int(seed) >= 0 else random.randint(0, 2**31 - 1)
+    if prompt.strip():
+        wf['5']['inputs']['text'] = prompt.strip()
+
+    r = requests.post(f'{COMFY}/prompt', json={'prompt': wf}, timeout=30)
+    if r.status_code != 200:
+        return None, f'❌ HTTP {r.status_code}: {r.text[:600]}'
+    pid = r.json()['prompt_id']
+
+    for i in range(300):
+        time.sleep(2)
+        try:
+            h = requests.get(f'{COMFY}/history/{pid}', timeout=10).json()
+        except Exception:
+            continue
+        if pid in h:
+            for node_out in h[pid].get('outputs', {}).values():
+                for im in node_out.get('images', []):
+                    if im.get('type') != 'output':
+                        continue
+                    p = os.path.join(OUT, im.get('subfolder', ''), im['filename'])
+                    if os.path.isfile(p):
+                        return Image.open(p), f'✅ Xong — {os.path.basename(p)}'
+            return None, '❌ Chạy xong nhưng không thấy ảnh — xem /content/comfyui.log'
+    return None, '❌ Hết thời gian chờ'
+
+default = latest_output()
+with gr.Blocks(title='Inpaint FLUX Q5') as demo:
+    gr.Markdown('## 🖌 Inpaint FLUX.1-schnell Q5\n'
+                '1. Upload ảnh (để trống = lấy ảnh mới nhất trong output)\n'
+                '2. **Tô lên vùng lỗi** (tay/mặt/chân) bằng cọ\n'
+                '3. Mô tả phần muốn vẽ lại → bấm **Sửa vùng tô** (~20s trên T4)')
+    with gr.Row():
+        with gr.Column():
+            ed = gr.ImageEditor(type='pil', height=620,
+                                value={'background': Image.open(default).convert('RGB'),
+                                       'layers': [], 'composite': Image.open(default).convert('RGB')}
+                                if default else None,
+                                brush=gr.Brush(colors=['#FFFFFF'], color_mode='fixed', default_size=40),
+                                label='Ảnh gốc — tô lên vùng cần sửa')
+            pr = gr.Textbox(label='Mô tả phần vẽ lại (tiếng Anh)',
+                            value='detailed human hand, five fingers, natural fingernails, '
+                                  'realistic skin texture, photorealistic, sharp focus', lines=2)
+            with gr.Row():
+                d = gr.Slider(0.2, 0.85, value=DENOISE, step=0.05, label='Denoise')
+                st = gr.Slider(4, 12, value=STEPS, step=1, label='Steps')
+            with gr.Row():
+                g = gr.Slider(0, 32, value=GROW_MASK, step=2, label='Grow mask px')
+                sd = gr.Number(value=-1, label='Seed (-1 = random)')
+            btn = gr.Button('🖌 Sửa vùng tô', variant='primary')
+        with gr.Column():
+            out_img = gr.Image(label='Kết quả', height=620, type='pil')
+            msg = gr.Markdown('Sẵn sàng.')
+    btn.click(do_inpaint, inputs=[ed, pr, d, st, g, sd], outputs=[out_img, msg])
+
+print('Đợi link https://xxxx.gradio.live (bấm Stop để tắt)')
+demo.queue().launch(share=True, server_name='0.0.0.0', server_port=7860)
+''')
+
+# =========================================================================== CELL 8
+code(r'''
+# @title 🔎 CELL 8 — Chẩn đoán: node có đủ không, model có đủ không, tài nguyên
+import os, json, shutil, requests
+
+COMFY = 'http://127.0.0.1:8188'
+P = json.load(open('/content/mode_ai_paths.json'))
+
+try:
+    info = requests.get(f'{COMFY}/object_info', timeout=60).json()
+except Exception as e:
+    raise RuntimeError(f'❌ Không gọi được /object_info — ComfyUI chưa chạy? ({e})')
+
+print(f'ComfyUI đang phục vụ {len(info)} node class\n')
+CAN_CO = ['UnetLoaderGGUF', 'DualCLIPLoaderGGUF', 'VAELoader', 'KSampler', 'EmptyLatentImage',
+          'CLIPTextEncode', 'VAEDecode', 'VAEEncode', 'ImageScaleBy', 'SaveImage', 'LoadImage',
+          'ImageToMask', 'VAEEncodeForInpaint', 'FaceDetailer', 'SAMLoader',
+          'UltralyticsDetectorProvider']
+thieu = []
+for n in CAN_CO:
+    ok = n in info
+    print(('  ✅ ' if ok else '  ❌ ') + n)
+    if not ok:
+        thieu.append(n)
+
+print('\nModel ComfyUI nhìn thấy:')
+for label, key in [('UNET GGUF', 'UnetLoaderGGUF'), ('CLIP', 'DualCLIPLoaderGGUF'),
+                   ('VAE', 'VAELoader'), ('YOLO', 'UltralyticsDetectorProvider'),
+                   ('SAM', 'SAMLoader')]:
+    if key not in info:
+        print(f'  {label}: (node thiếu)')
+        continue
+    node = info[key]
+    seen = set()
+    for field in ('unet_name', 'clip_name1', 'clip_name2', 'vae_name', 'model_name'):
+        req = node.get('input', {}).get('required', {}).get(field)
+        if isinstance(req, list) and req and isinstance(req[0], list):
+            seen.update(req[0])
+    print(f'  {label}: {sorted(seen) if seen else "(trống!)"}')
+
+if 'UltralyticsDetectorProvider' in info:
+    yolo = info['UltralyticsDetectorProvider']['input']['required']['model_name'][0]
+    bad = [x for x in yolo if not (x.startswith('bbox/') or x.startswith('segm/'))]
+    if yolo and bad == yolo:
+        print('  ⚠️ YOLO không có tiền tố bbox/ — kiểm tra symlink models/ultralytics (Cell 2)')
+
+print('\nVRAM:')
+os.system('nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader')
+if thieu:
+    print('\n❌ THIẾU NODE: ' + ', '.join(thieu))
+    print('   → GGUF thiếu: pip install "gguf>=0.13" sentencepiece protobuf')
+    print('   → FaceDetailer/SAMLoader thiếu: pip install scikit-image piexif dill segment-anything')
+    print('   → UltralyticsDetectorProvider thiếu: pip install ultralytics matplotlib')
+    print('   Sau đó chạy lại Cell 2 rồi khởi động lại ComfyUI (Cell 5).')
+else:
+    print('\n✅ Đủ node cho cả 5 workflow')
+print('\n── Tài nguyên ──')
+vram_total = 0.0
+try:
+    st = requests.get(f'{COMFY}/system_stats', timeout=20).json()
+    si = st.get('system', {}) or {}
+    dev = (st.get('devices') or [{}])[0]
+    gb = 1024.0 ** 3
+    vram_total = float(dev.get('vram_total', 0) or 0) / gb
+    vram_free = float(dev.get('vram_free', 0) or 0) / gb
+    ram_total = float(si.get('ram_total', 0) or 0) / gb
+    ram_free = float(si.get('ram_free', 0) or 0) / gb
+    print(f'  GPU      : {dev.get("name", "?")}')
+    print(f'  VRAM     : {vram_free:.1f} GB trống / {vram_total:.1f} GB')
+    print(f'  RAM      : {ram_free:.1f} GB trống / {ram_total:.1f} GB')
+    print(f'  ComfyUI  : {si.get("comfyui_version", "?")} · torch {si.get("pytorch_version", "?")}')
+except Exception as e:
+    print(f'  (không đọc được /system_stats: {e})')
+try:
+    du = shutil.disk_usage('/content')
+    print(f'  Ổ đĩa    : {du.free / 1024**3:.1f} GB trống / {du.total / 1024**3:.1f} GB')
+except Exception as e:
+    print(f'  (không đọc được ổ đĩa: {e})')
+
+print('\n── Cấu hình khuyên dùng cho máy này ──')
+if vram_total >= 20:
+    kh = ('1024x1024 (vuông, ~1MP)', 'flux_q5_quality', 'Mặc định', 2,
+          'VRAM rộng: chạy quality/hires, 2 ảnh/lượt')
+elif vram_total >= 12:
+    kh = ('832x1216 (dọc, ~1MP)', 'flux_q5_quality', 'Mặc định', 2,
+          'T4 16GB / L4: quality thoải mái')
+elif vram_total >= 8:
+    kh = ('832x1216 (dọc, ~1MP)', 'flux_q5_standard', 'Mặc định', 1,
+          'VRAM vừa: standard, 1 ảnh/lượt')
+elif vram_total > 0:
+    kh = ('768x1024 (dọc nhỏ, nhanh)', 'flux_q5_fast', 'fp16-vae', 1,
+          'VRAM gò bó (<8GB): đành dùng fp16-vae → ẢNH SẼ MỜ HƠN, xem mục "Ảnh bị mờ"')
+else:
+    kh = ('(không đo được VRAM)', 'flux_q5_standard', 'Mặc định', 1, 'Đặt tay theo kinh nghiệm')
+print(f'  Khung hình : {kh[0]}')
+print(f'  Pipeline   : {kh[1]}')
+print(f'  VAE_PREC   : {kh[2]}   (Cell 5 — đổi xong phải chạy lại Cell 5)')
+print(f'  Ảnh/lượt   : {kh[3]}')
+print(f'  Ghi chú    : {kh[4]}')
+
+print('\nLog ComfyUI (30 dòng cuối):')
+os.system('tail -30 /content/comfyui.log')
+''')
+
+# =========================================================================== CELL 8b
+code(r'''
+# @title 🔍 CELL 8b — Đo độ nét & A/B tìm nguyên nhân ảnh mờ
+CHAY_AB = True  # @param {type:"boolean"}
+PRESET_AB = "chan_dung_can"  # @param __PRESET_IDS__
+PIPELINE_AB = "flux_q5_standard"  # @param ["flux_q5_fast", "flux_q5_standard", "flux_q5_quality", "flux_q5_hires"]
+PROMPT_AB = ""  # @param {type:"string"}
+SIZE_AB = "theo preset (khuyên dùng)"  # @param __SIZE_IDS__
+SEED_AB = 12345  # @param {type:"integer"}
+
+# "Mờ" là cảm giác. Đo được thì mới sửa được: đây là phương sai Laplacian —
+# ảnh càng nét, số càng lớn. Chỉ so các ảnh CÙNG kích thước với nhau.
+import os, glob, time
+import numpy as np
+from PIL import Image, ImageFilter
+from IPython.display import display
+
+OUT_AB = '/content/ComfyUI/output'
+
+
+def do_net(anh):
+    """Độ nét = phương sai của Laplacian (4 lân cận).
+
+    Trả về (lap_var, ti_le):
+      lap_var — tuyệt đối (so sánh các ảnh CÙNG kích thước)
+      ti_le   — lap_var / phương sai ảnh (bớt phụ thuộc tương phản)
+    """
+    im = Image.open(anh).convert('L') if isinstance(anh, str) else anh.convert('L')
+    a = np.asarray(im, dtype=np.float32)      # thang 0-255 để số đọc được
+    lap = (a[1:-1, 1:-1] * 4.0 - a[:-2, 1:-1] - a[2:, 1:-1] - a[1:-1, :-2] - a[1:-1, 2:])
+    v_lap = float(lap.var())
+    v_anh = float(a.var())
+    return v_lap, (v_lap / v_anh if v_anh > 1e-6 else 0.0)
+
+
+def mo_tham_chieu(anh, radius=2):
+    """Mốc tham chiếu TỰ HIỆU CHUẨN: chính ảnh này, nếu bị mờ radius=2 thì ra bao nhiêu.
+
+    Không dùng ngưỡng cố định (vô nghĩa vì tuỳ nội dung ảnh) — dùng ảnh của bạn
+    làm thước đo: lap_var của bạn so với bản đã làm mờ của chính nó.
+    """
+    im = Image.open(anh) if isinstance(anh, str) else anh
+    return do_net(im.filter(ImageFilter.GaussianBlur(radius)))[0]
+
+
+def do_thu_muc(thu_muc=OUT_AB, toi_da=10):
+    """Đo độ nét mọi ảnh trong thư mục output."""
+    fs = sorted(glob.glob(os.path.join(thu_muc, '**', '*.png'), recursive=True),
+                key=os.path.getmtime, reverse=True)[:int(toi_da)]
+    if not fs:
+        print('Chưa có ảnh nào trong %s — chạy Cell 6 trước' % thu_muc)
+        return []
+    print('%-46s %10s %8s' % ('ảnh', 'lap_var', 'ti_le'))
+    print('-' * 68)
+    rows = []
+    for f in fs:
+        lv, tl = do_net(f)
+        rows.append((f, lv, tl))
+        print('%-46s %10.2f %8.4f' % (os.path.basename(f)[:46], lv, tl))
+    return rows
+
+
+# 4 cấu hình để khoanh vùng nguyên nhân. Cùng prompt + cùng seed nên nội dung
+# gần như giống hệt nhau → chỉ khác do cấu hình.
+CAU_HINH_AB = [
+    ('① không negative · cfg 1.0 · 4 bước',
+     dict(neg_mode='khong - không dùng negative', cfg=1.0, steps=4)),
+    ('② có negative · cfg 2.0 · 4 bước',
+     dict(neg_mode='theo preset', cfg=1.0, tu_dong_cfg=True, steps=4)),
+    ('③ có negative · cfg 2.0 · 8 bước',
+     dict(neg_mode='theo preset', cfg=1.0, tu_dong_cfg=True, steps=8)),
+    ('④ như ① · + làm nét 0.35 (vá triệu chứng)',
+     dict(neg_mode='khong - không dùng negative', cfg=1.0, steps=4, sac_net=0.35)),
+]
+
+
+def ab_chong_mo(preset=PRESET_AB, prompt=PROMPT_AB, pipeline=PIPELINE_AB,
+                size=SIZE_AB, seed=SEED_AB):
+    """Chạy 4 cấu hình trên cùng một seed, đo độ nét từng cái, xếp hạng."""
+    if 'generate' not in globals():
+        print('❌ Chưa có hàm generate() — chạy Cell 6 trước')
+        return []
+    ket_qua = []
+    for i, (ten, kw) in enumerate(CAU_HINH_AB):
+        t0 = time.time()
+        try:
+            files = generate(preset=preset, prompt=prompt or None, pipeline=pipeline,
+                             size=size, seed=int(seed), n=1, show=False,
+                             ten_file='flux/ab%d' % i, **kw)
+        except Exception as e:
+            print('  %s → LỖI: %s' % (ten, str(e)[:110]))
+            continue
+        if not files:
+            print('  %s → không có file' % ten)
+            continue
+        f = files[-1]
+        lv, tl = do_net(f)
+        ket_qua.append((ten, lv, tl, f, time.time() - t0))
+        print('  %s → xong (%.0fs)' % (ten, time.time() - t0))
+
+    if not ket_qua:
+        return []
+    print('\n%-42s %10s %8s %8s' % ('cấu hình', 'lap_var', 'ti_le', 'giây'))
+    print('-' * 72)
+    for ten, lv, tl, f, dt in sorted(ket_qua, key=lambda r: -r[1]):
+        print('%-42s %10.2f %8.4f %8.0f' % (ten[:42], lv, tl, dt))
+
+    sx = sorted(ket_qua, key=lambda r: -r[1])
+    tot, second = sx[0], (sx[1] if len(sx) > 1 else None)
+    print('\n🏆 Nét nhất: %s' % tot[0])
+    try:
+        display(Image.open(tot[3]))
+    except Exception:
+        pass
+    tham_chieu = mo_tham_chieu(tot[3])
+    print('📏 Mốc trên chính ảnh này: nếu bị mờ radius=2 thì lap_var ≈ %.2f, '
+          'ảnh của bạn đang %.2f (gấp %.1f lần).'
+          % (tham_chieu, tot[1], (tot[1] / tham_chieu) if tham_chieu > 0 else 0))
+    if second:
+        print('   So với cấu hình đứng sau: nét hơn %.0f%%.'
+              % ((tot[1] / second[1] - 1) * 100 if second[1] > 0 else 0))
+
+    n1 = next((r for r in ket_qua if r[0].startswith('①')), None)
+    n2 = next((r for r in ket_qua if r[0].startswith('②')), None)
+    print('\n📌 Kết luận gợi ý (dựa trên số đo của chính máy bạn):')
+    if n1 and n2 and n2[1] < n1[1] * 0.85:
+        print('   • ② (có negative, cfg 2.0) MỜ HƠN ① rõ rệt → cfg>1 đang làm mềm ảnh.')
+        print('     Giữ NEG_MODE = "khong" (nhanh + nét), hoặc hạ CFG xuống 1.5.')
+    elif n1 and n2 and n2[1] > n1[1] * 1.15:
+        print('   • ② NÉT HƠN ① → negative/cfg không làm mờ, thậm chí còn giúp.')
+    elif n1 and n2:
+        print('   • ② ≈ ① → negative/cfg không phải thủ phạm.')
+    chenh = (tot[1] / tham_chieu) if tham_chieu > 0 else 0
+    if chenh < 3:
+        print('   • Ảnh nét nhất vẫn chỉ gấp %.1f lần bản "mờ radius=2" → mờ từ NGUỒN,' % chenh)
+        print('     không phải do cfg. Kiểm tra theo thứ tự:')
+        print('       1) Cell 5 → VAE_PREC phải là "Mặc định" hoặc "fp32-vae"')
+        print('          (fp16-vae làm VAE decode mất chi tiết; mặc định của ComfyUI')
+        print('           trên T4 là fp32 vì T4 không có bf16 — comfy/sd.py:1101).')
+        print('          Đổi xong PHẢI chạy lại Cell 5 (khởi động lại ComfyUI) rồi đo lại.')
+        print('       2) UNET Q5_K_S → thử Q5_K_M / Q6_K nếu VRAM còn.')
+        print('       3) Ảnh đang xem có đúng kích thước gốc không (đừng phóng to để xem).')
+    else:
+        print('   • Ảnh nét nhất gấp %.1f lần mốc mờ → pipeline ổn, chỉ cần chọn cấu hình đứng đầu.' % chenh)
+    return ket_qua
+
+
+if CHAY_AB:
+    ab_chong_mo()
+else:
+    do_thu_muc()
+''')
+
+# =========================================================================== CELL 8c
+code(r'''
+# @title 🧭 CELL 8c — Quy trình toàn diện: tạo → đo → sửa → chốt
+CHAY_QT = True  # @param {type:"boolean"}
+PRESET_QT = "chan_dung_can"  # @param __PRESET_IDS__
+PROMPT_QT = ""  # @param {type:"string"}
+SIZE_QT = "theo preset (khuyên dùng)"  # @param __SIZE_IDS__
+MUC_QT = "chuan"  # @param ["nhanh", "chuan", "ky"]
+SO_UNG_VIEN = 3  # @param {type:"slider", min:1, max:4, step:1}
+SEED_QT = 12345  # @param {type:"integer"}
+DUNG_NEGATIVE = False  # @param {type:"boolean"}
+NGUONG_NET = 3.0  # @param {type:"slider", min:1.5, max:6, step:0.5}
+TU_SUA = True  # @param {type:"boolean"}
+
+# ⚠️ Điểm số ở đây KHÔNG đo được giải phẫu (thừa ngón, méo mặt). Nó chỉ đo những gì
+# đo được bằng thống kê ảnh: nét, cháy sáng, quá tối, độ tương phản. Giải phẫu vẫn
+# phải nhờ preset/prompt (Cell 6) hoặc sửa tay bằng Cell 7.
+import os, json, time
+import numpy as np
+from PIL import Image, ImageFilter
+from IPython.display import display
+
+MUC = {
+    'nhanh': dict(ung_vien=2, nang=False, lan_sua=0),
+    'chuan': dict(ung_vien=3, nang=False, lan_sua=1),
+    'ky':    dict(ung_vien=4, nang=True,  lan_sua=2),
+}
+NAP = {'flux_q5_fast': 'flux_q5_standard',
+       'flux_q5_standard': 'flux_q5_quality',
+       'flux_q5_quality': 'flux_q5_hires',
+       'flux_q5_hires': 'flux_q5_hires'}
+
+
+def _lap_var(im):
+    a = np.asarray(im.convert('L'), dtype=np.float32)
+    lap = (a[1:-1, 1:-1] * 4.0 - a[:-2, 1:-1] - a[2:, 1:-1] - a[1:-1, :-2] - a[1:-1, 2:])
+    return float(lap.var())
+
+
+def danh_gia(anh, nguong_net=3.0):
+    """Chấm điểm MỘT ảnh. Trả về dict (dat, diem, loi, các số đo).
+
+    Tiêu chí — cố gắng chỉ dùng thứ đo được, không phụ thuộc nội dung ảnh:
+      mờ        : độ nét < nguong_net × mốc "chính ảnh này bị mờ radius=2"
+                  (mốc tự hiệu chuẩn → không cần ngưỡng tuyệt đối)
+      cháy sáng : > 2% pixel >= 250
+      quá tối   : > 2% pixel <= 5
+      loãng     : độ lệch chuẩn mức xám < 15 (cảnh thật sự mờ sương thì có thể bị
+                  đánh nhầm — xem như gợi ý, không phải kết luận)
+    """
+    im = Image.open(anh) if isinstance(anh, str) else anh
+    xam = np.asarray(im.convert('L'), dtype=np.float32)
+    net = _lap_var(im)
+    moc = _lap_var(im.filter(ImageFilter.GaussianBlur(2)))
+    ty_le = (net / moc) if moc > 1e-6 else 0.0
+    chay = float((xam >= 250).mean() * 100.0)
+    toi = float((xam <= 5).mean() * 100.0)
+    tphan = float(xam.std())
+    loi = []
+    if ty_le < nguong_net:
+        loi.append('mờ')
+    if chay > 2.0:
+        loi.append('cháy sáng')
+    if toi > 2.0:
+        loi.append('quá tối')
+    if tphan < 15.0:
+        loi.append('loãng')
+    diem = (100 - 30 * ('mờ' in loi) - 25 * ('cháy sáng' in loi)
+            - 15 * ('quá tối' in loi) - 15 * ('loãng' in loi))
+    return dict(anh=(anh if isinstance(anh, str) else '(ảnh trong bộ nhớ)'),
+                dat=(not loi), diem=max(0, diem), loi=loi, net=net, moc_mo=moc,
+                ty_le_net=ty_le, chay_sang=chay, qua_toi=toi, tuong_phan=tphan)
+
+
+def _in_bang(ds):
+    print('%-30s %9s %7s %6s %6s %7s  %s'
+          % ('ảnh', 'lap_var', 'gấp mốc', 'cháy%', 'tối%', 't.phản', 'kết luận'))
+    print('-' * 88)
+    for r in ds:
+        print('%-30s %9.1f %7.1f %6.1f %6.1f %7.1f  %s'
+              % (os.path.basename(r['anh'])[:30], r['net'], r['ty_le_net'],
+                 r['chay_sang'], r['qua_toi'], r['tuong_phan'],
+                 ('✅ đạt' if r['dat'] else '❌ ' + ', '.join(r['loi']))))
+
+
+def tao_anh_tot(prompt=None, preset=PRESET_QT, pipeline=None, size=SIZE_QT,
+                muc=MUC_QT, so_ung_vien=None, seed=SEED_QT, nguong_net=NGUONG_NET,
+                dung_negative=DUNG_NEGATIVE, tu_sua=TU_SUA, hien=True):
+    """Quy trình khép kín:
+
+    TẠO n ứng viên (khác seed) → ĐO từng cái → nếu chưa đạt thì SỬA
+    (làm nét, rồi nâng pipeline) → CHỐT ảnh tốt nhất + báo cáo.
+    """
+    if 'generate' not in globals():
+        print('❌ Chưa có hàm generate() — chạy Cell 6 trước')
+        return None
+    if (prompt or '').strip():                      # có prompt riêng → không dùng preset
+        preset = globals().get('TUY_CHON', '(tự viết prompt ở dưới)')
+    cau_hinh = MUC.get(muc, MUC['chuan'])
+    n = int(so_ung_vien or cau_hinh['ung_vien'])
+    if cau_hinh['nang'] and pipeline is None:
+        pipeline = 'flux_q5_quality'
+    neg = 'theo preset' if dung_negative else 'khong - không dùng negative'
+
+    def hien_tai():
+        if pipeline:
+            return pipeline
+        p = globals().get('PRESETS', {}).get(preset)
+        return p['pipeline'] if p else 'flux_q5_standard'
+
+    def mot_luot(vong, i, sd, pl, sac, ghi_chu):
+        try:
+            files = generate(prompt=prompt, preset=preset, pipeline=pl, size=size,
+                             seed=int(sd), n=1, show=False, neg_mode=neg,
+                             sac_net=sac, ten_file='flux/qt%d_%d' % (vong, i))
+        except Exception as e:
+            print('  ⚠️ %s → lỗi: %s' % (ghi_chu, str(e)[:100]))
+            return None
+        if not files:
+            return None
+        d = danh_gia(files[-1], nguong_net)
+        d.update(cau_hinh=ghi_chu, seed=int(sd), pipeline=pl or '(theo preset)',
+                 sac_net=sac)
+        return d
+
+    print('🚀 Quy trình: %s (%d ứng viên, tối đa %d lần sửa)'
+          % (muc, n, cau_hinh['lan_sua']))
+    ds = []
+    for i in range(n):
+        d = mot_luot(1, i, int(seed) + i, pipeline, 0.0, 'vòng 1 · seed %d' % (int(seed) + i))
+        if d:
+            ds.append(d)
+            print('   %s → %s' % (d['cau_hinh'], 'đạt' if d['dat'] else ', '.join(d['loi'])))
+
+    dat = [d for d in ds if d['dat']]
+    if not dat and tu_sua and cau_hinh['lan_sua'] >= 1 and ds:
+        print('\n🔧 Chưa ảnh nào đạt → sửa lần 1: làm nét 0.35 trên seed tốt nhất')
+        tot = max(ds, key=lambda r: r['diem'])
+        d = mot_luot(2, 0, tot['seed'], pipeline, 0.35, 'vòng 2 · làm nét 0.35')
+        if d:
+            ds.append(d)
+            print('   %s → %s' % (d['cau_hinh'], 'đạt' if d['dat'] else ', '.join(d['loi'])))
+        dat = [d for d in ds if d['dat']]
+    if not dat and tu_sua and cau_hinh['lan_sua'] >= 2 and ds:
+        print('\n🔧 Vẫn chưa → sửa lần 2: nâng pipeline (thêm bước sửa mặt/tay)')
+        pl2 = NAP.get(hien_tai(), 'flux_q5_quality')
+        tot = max(ds, key=lambda r: r['diem'])
+        d = mot_luot(3, 0, tot['seed'], pl2, 0.35, 'vòng 3 · %s + làm nét' % pl2)
+        if d:
+            ds.append(d)
+            print('   %s → %s' % (d['cau_hinh'], 'đạt' if d['dat'] else ', '.join(d['loi'])))
+        dat = [d for d in ds if d['dat']]
+
+    print('\n' + '=' * 88)
+    _in_bang(sorted(ds, key=lambda r: (-r['diem'], -r['net'])))
+    if not ds:
+        print('\n❌ Không tạo được ảnh nào — xem /content/comfyui.log')
+        return None
+    chon = max(dat, key=lambda r: r['diem']) if dat else max(ds, key=lambda r: r['diem'])
+
+    print('\n' + ('✅ ĐẠT CHẤT LƯỢNG' if chon['dat']
+                  else '⚠️ CHƯA ĐẠT — đây là ảnh tốt nhất trong những cái đã thử'))
+    print('   Ảnh      : %s' % chon['anh'])
+    print('   Cấu hình : %s · %s' % (chon['cau_hinh'], chon['pipeline']))
+    print('   Điểm     : %d/100 · độ nét gấp %.1f lần mốc mờ (ngưỡng %.1f)'
+          % (chon['diem'], chon['ty_le_net'], nguong_net))
+
+    if not chon['dat']:
+        print('   Còn lỗi  : %s' % ', '.join(chon['loi']))
+        print('\n   Việc tiếp theo:')
+        if 'mờ' in chon['loi']:
+            print('   • Mờ → chạy CELL 8b để khoanh vùng nguyên nhân (VAE fp16 / cfg /')
+            print('     lượng tử). Đừng chỉ tăng SAC_NET — làm nét là vá triệu chứng.')
+        if 'cháy sáng' in chon['loi'] or 'quá tối' in chon['loi']:
+            print('   • Sáng/tối → sửa prompt ánh sáng (soft window light, evenly lit),')
+            print('     hoặc hạ CFG nếu đang để > 1.')
+        if 'loãng' in chon['loi']:
+            print('   • Loãng → thêm nguồn sáng có hướng (side lighting, rim light).')
+        print('   • Lỗi giải phẫu (tay/mặt): điểm số KHÔNG đo được. Đổi preset/prompt')
+        print('     ở Cell 6, hoặc dùng Cell 7 tô vùng cần sửa rồi inpaint.')
+
+    if hien:
+        try:
+            display(Image.open(chon['anh']))
+        except Exception:
+            pass
+    try:
+        with open('/content/bao_cao_chat_luong.json', 'w', encoding='utf-8') as f:
+            json.dump({'thoi_gian': time.strftime('%Y-%m-%d %H:%M:%S'), 'muc': muc,
+                       'nguong_net': nguong_net, 'negative': neg, 'chon': chon,
+                       'tat_ca': ds}, f, ensure_ascii=False, indent=1)
+        print('\n📄 Báo cáo chi tiết: /content/bao_cao_chat_luong.json')
+    except Exception as e:
+        print('\n⚠️ Không ghi được báo cáo (%s) — ảnh vẫn đã tạo, chỉ thiếu file báo cáo' % e)
+    return chon
+
+
+if CHAY_QT:
+    anh_chon = tao_anh_tot()
+''')
+
+# =========================================================================== CELL 9
+code(r'''
+# @title 🌐 CELL 9 — Tunnel dự phòng (localtunnel) nếu cloudflared không chạy
+import urllib.request, subprocess
+
+subprocess.run(['npm', 'install', '-g', 'localtunnel'],
+               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+ip = urllib.request.urlopen('https://ipv4.icanhazip.com', timeout=20).read().decode().strip()
+print('🔑 Tunnel Password (dán khi trang hỏi):', ip)
+subprocess.run(['lt', '--port', '8188'])
+''')
+
+# =========================================================================== MD cuối
+md("""
+## ⚙️ Tham số tối ưu (đã đặt sẵn trong workflow)
+
+| Nơi | Tham số | Giá trị | Vì sao |
+|---|---|---|---|
+| KSampler chính | steps | **4** | FLUX.1-schnell là model chưng cất 4 bước; thêm bước chỉ tốn thời gian |
+| KSampler chính | cfg | **1.0** | schnell không dùng CFG → ComfyUI bỏ luôn nhánh negative (nhanh hơn) |
+| KSampler chính | sampler / scheduler | `euler` / `simple` | bộ đôi ổn định nhất cho schnell |
+| KSampler chính | size | 1024×1024 (hoặc 832×1216) | giữ tổng ~1 MP, bội số của 16 |
+| FaceDetailer mặt | denoise / steps | 0.22 / 4 | đủ sửa mắt-miệng mà không đổi identity |
+| FaceDetailer mặt | guide_size / max_size | 384 / 768 | crop nhỏ → nhanh, ít VRAM hơn 512/1024 |
+| FaceDetailer mặt | SAM | `sam_vit_b` + threshold 0.93 | mask mặt sát, không lem |
+| FaceDetailer tay | denoise / feather | 0.28 / 16 | không dùng SAM (tiết kiệm VRAM), feather lớn để blend |
+| Hires | upscale 1.5× → denoise 0.35, 4 bước | — | không cần ESRGAN/UltimateSDUpscale, chỉ dùng node có sẵn |
+| Inpaint | denoise 0.5, steps 6, grow_mask 12px | — | giữ context quanh vùng tô |
+| ComfyUI | `--reserve-vram 1.0`, `--force-fp16`, `--fp16-vae`, SDPA | — | hợp với T4 16 GB (không dùng `--lowvram` vì ComfyUI mới đã có Dynamic VRAM) |
+
+**Nếu OOM:** giảm `WIDTH/HEIGHT` về 832×832 · đặt `VAE_PREC=cpu-vae` · `PREVIEW=none` ·
+`VRAM_MODE=lowvram` · tắt Cell 7 (Gradio) khi không dùng.
+
+## 💡 Prompt — cách viết để KHÔNG bị lỗi
+
+### Negative prompt vô dụng trên pipeline này
+
+`comfy/samplers.py:610` — `if math.isclose(cond_scale, 1.0): uncond_ = None`.
+Với cfg=1.0, ComfyUI **bỏ hẳn nhánh negative**. Viết "no extra fingers" vào cũng không được đọc.
+Mọi "chống lỗi" phải nằm trong prompt **dương**.
+
+### Tránh lỗi tay: đừng bắt model tự bịa ngón tay
+
+| Viết cái này | Đừng viết |
+|---|---|
+| `hands tucked into pockets` | `five fingers` |
+| `both hands wrapped around a ceramic cup` | `perfect hands` |
+| `hands clasped together on her lap` | `detailed fingers` |
+| `carrying a canvas tote bag` | (tay trôi nổi, không tả gì) |
+
+Nghịch lý: càng nhấn mạnh số ngón, model chưng cất càng hay sinh **thêm** ngón.
+
+### Cấu trúc prompt ăn với FLUX
+
+**chủ thể → tư thế/tay → trang phục/bối cảnh → ánh sáng → ống kính → khung hình**
+
+```
+Close-up portrait of a young Vietnamese woman, natural skin with visible pores, soft window
+light from the left, 85mm lens, shallow depth of field, head and shoulders framing, plain
+warm backdrop, subtle film grain
+```
+
+Giữ ~1 megapixel (832×1216 / 1216×832 / 1024²) — xa khỏi ~1MP thì schnell sinh lỗi cấu trúc.
+
+### Dùng preset có sẵn
+
+Ô **PRESET** ở Cell 6 có 9 prompt kèm nhãn rủi ro: `chan_dung_can` (cận cảnh, không có tay),
+`toan_than_tui_quan` (tay trong túi), `toan_than_ngoi` (tay đan) — rủi ro **Thấp**;
+`ban_than_cam_coc`, `thoi_trang`, `duong_pho` — Trung bình; `anh_minh_hoa` — **Cao**
+(YOLO mặt huấn luyện trên mặt người thật nên không nhận diện được mặt anime).
+
+Nguồn: `scripts/prompt_presets.py` → `workflows/prompts.json`.
+
+**Negative prompt có ở ô `NEG_MODE`** (9 chế độ: theo preset / chung / tay / mặt / chữ /
+thừa chi / tất cả / tự viết / không dùng). Nhưng nhớ quy tắc `comfy/samplers.py:610`:
+ở `cfg = 1.0` ComfyUI **bỏ hẳn nhánh negative**, viết vào cũng không được đọc.
+Vì vậy Cell 6 in rõ trạng thái trước mỗi lần chạy — `✅ Negative đang BẬT (cfg=2.0 > 1.0)`
+hoặc `⚠️ Có negative mà cfg=1.0 → negative KHÔNG được đọc` — và khi bạn bật negative nó
+tự nâng `cfg 1.0 → 2.0`, `steps 4 → 8` để negative thật sự có tác dụng.
+Muốn nhanh lại như cũ: `NEG_MODE = khong - không dùng negative`.
+
+Các ô khác của Cell 6: `THEM_VAO_PROMPT` (nối thêm vào preset), `CFG`, `TU_DONG_BAT_CFG`,
+`STEPS`, `BC_SUA_CHI_TIET` (bước riêng cho sửa mặt/tay), `SAMPLER`, `SCHEDULER`, `SEED`
+(`-1` = ngẫu nhiên), `SO_ANH`, `SIZE` (6 khung hình ~1MP), `TEN_FILE`, `NHIEU_PROMPT`
+(mỗi dòng một prompt), `LUU_VAO_DRIVE`. Gọi bằng code: `nhanh("...")` · `dep("...", n=2)`.
+
+## 🔁 Quy trình toàn diện — Cell 8c
+
+Cell 6 là "tạo một ảnh". Cell 8c là "chốt một ảnh TỐT": tạo nhiều ứng viên (khác seed)
+→ chấm điểm từng cái (mờ / cháy sáng / quá tối / loãng) → nếu chưa đạt thì tự sửa
+(làm nét 0.35, rồi nâng pipeline) → chốt ảnh điểm cao nhất + báo cáo JSON.
+
+Ba mức: `nhanh` (2 ứng viên, không sửa) · `chuan` (3 + 1 lần sửa) · `ky`
+(4, ép pipeline `quality`, 2 lần sửa, nâng tới `hires`).
+
+Ngưỡng "mờ" **tự hiệu chuẩn**: so độ nét của ảnh với chính ảnh đó sau khi bị làm mờ
+radius=2. Không có ngưỡng tuyệt đối nào bị bịa ra, nên dùng được cho mọi nội dung ảnh.
+
+⚠️ **Điểm số không đo được giải phẫu** — thừa ngón, méo mặt, dính chi thì máy không tự
+đánh giá được. Khoản đó nhờ preset/prompt (Cell 6) hoặc sửa tay bằng Cell 7.
+Cell 8b là nơi khoanh vùng nguyên nhân khi ảnh mờ (VAE fp16 / cfg / lượng tử).
+
+## 🧪 Tự kiểm tra (không cần GPU, không cần mạng)
+
+```bash
+python3 scripts/check_sync.py          # một lệnh làm hết
+python3 scripts/check_sync.py --fix    # tự ghi lại artifact cho khớp nguồn
+```
+
+`check_sync.py` sinh lại toàn bộ artifact vào thư mục tạm, so **từng byte** với bản trong repo,
+rồi chạy kiểm tra tĩnh. Cơ chế này có nghĩa là **bạn sửa workflow bằng cách sửa
+`scripts/build_workflows.py`**, không phải sửa file JSON — nếu không, CI sẽ báo lệch.
+
+Kiểm tra tĩnh đối chiếu từng node với `INPUT_TYPES`/`RETURN_TYPES` trích trực tiếp từ mã nguồn
+ComfyUI + ComfyUI-GGUF + Impact Pack/Subpack (891 node class): thiếu input required, sai enum,
+link đứt, sai kiểu dữ liệu, chu trình, sai tiền tố `bbox/` — bị bắt hết trước khi lên Colab.
+
+Muốn cập nhật spec theo phiên bản ComfyUI/Impact Pack mới hơn:
+
+```bash
+python3 scripts/node_spec.py --comfy /tmp/ComfyUI --gguf /tmp/ComfyUI-GGUF \
+        --impact /tmp/Impact-Pack --subpack /tmp/Impact-Subpack -o workflows/node_spec.json
+```
+""")
+
+
+def build_notebook() -> dict:
+    cells = []
+    for kind, src in CELLS:
+        lines = src.splitlines(keepends=True)
+        cell = {"cell_type": kind, "metadata": {}, "source": lines}
+        if kind == "code":
+            cell["execution_count"] = None
+            cell["outputs"] = []
+        cells.append(cell)
+    return {
+        "cells": cells,
+        "metadata": {
+            "accelerator": "GPU",
+            "colab": {"gpuType": "T4", "provenance": [], "toc_visible": True},
+            "kernelspec": {"display_name": "Python 3", "name": "python3"},
+            "language_info": {"name": "python"},
+        },
+        "nbformat": 4,
+        "nbformat_minor": 0,
+    }
+
+
+def _bound_names(tree: ast.AST) -> set[str]:
+    """Mọi tên cell này gán/định nghĩa/khởi tạo (ở bất kỳ độ sâu nào)."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update((a.asname or a.name.split(".")[0]) for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            names.update((a.asname or a.name) for a in node.names)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            a = node.args
+            for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg):
+                if arg:
+                    names.add(arg.arg)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names.add(node.id)
+        elif isinstance(node, (ast.For, ast.AsyncFor)) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if isinstance(item.optional_vars, ast.Name):
+                    names.add(item.optional_vars.id)
+        elif isinstance(node, ast.ExceptHandler) and isinstance(node.name, str):
+            names.add(node.name)
+        elif isinstance(node, ast.Global):
+            names.update(node.names)
+        elif isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
+
+
+def _loaded_names(tree: ast.AST) -> set[str]:
+    return {n.id for n in ast.walk(tree)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+
+
+def check_no_raw_version(nb: dict) -> None:
+    """Cấm đọc `module.__version__` trực tiếp trong notebook.
+
+    Rất nhiều package KHÔNG định nghĩa `__version__` — đáng chú ý là `gguf`
+    (đã gây `AttributeError: module 'gguf' has no attribute '__version__'`,
+    làm gãy Cell 2 ngay tại đoạn vốn chỉ để in cảnh báo).
+    Hãy dùng `pkg_version(dist, module)`, nó hỏi importlib.metadata trước.
+    """
+    # Lưu ý: getattr(x, '__version__', '?') truyền tên attribute dưới dạng CHUỖI hằng,
+    # không phải ast.Attribute → tự nhiên đã được miễn, không cần ngoại lệ.
+    bad: list[str] = []
+    for i, cell in enumerate(nb["cells"]):
+        if cell["cell_type"] != "code":
+            continue
+        tree = ast.parse("".join(cell["source"]))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr == "__version__":
+                bad.append(f"  cell {i} dòng {node.lineno}: {ast.unparse(node)} "
+                           f"— dùng getattr(x, '__version__', '?') hoặc pkg_version(dist, module)")
+    if bad:
+        raise AssertionError(
+            "❌ Đọc `module.__version__` trực tiếp (có thể AttributeError, vd package `gguf`):\n"
+            + "\n".join(bad))
+    print("✅ không đọc module.__version__ trực tiếp")
+
+
+def check_undefined_names(nb: dict) -> None:
+    """Bắt tên dùng mà chưa được định nghĩa.
+
+    Colab chạy các cell theo thứ tự và CHIA SẺ namespace, nên tập tên được gán
+    được cộng dồn qua các cell — đúng với thực tế khi chạy.
+    """
+    import builtins
+    known = set(dir(builtins)) | {"__name__", "__file__", "__doc__", "_"}
+    problems: list[str] = []
+    for i, cell in enumerate(nb["cells"]):
+        if cell["cell_type"] != "code":
+            continue
+        src = "".join(cell["source"])
+        tree = ast.parse(src)
+        # Colab: dùng tên ở ĐÂU cũng được miễn cell này hoặc cell trước đã gán.
+        # (Hàm dùng biến gán ở cuối cell là hợp lệ — Python chỉ resolve khi gọi.)
+        known |= _bound_names(tree)
+        unknown = sorted(_loaded_names(tree) - known)
+        if unknown:
+            title = src.splitlines()[0][:58]
+            problems.append(f"  cell {i} ({title}): {', '.join(unknown)}")
+    if problems:
+        raise AssertionError(
+            "❌ Có tên dùng mà chưa định nghĩa (notebook sẽ crash khi chạy):\n"
+            + "\n".join(problems))
+    print("✅ không có tên dùng mà chưa định nghĩa")
+
+
+def self_check(nb: dict, builder_src: str, presets_src: str) -> None:
+    """Kiểm tra notebook trước khi ghi ra đĩa."""
+    n_code = 0
+    for i, cell in enumerate(nb["cells"]):
+        if cell["cell_type"] != "code":
+            continue
+        n_code += 1
+        src = "".join(cell["source"])
+        ast.parse(src)  # lỗi cú pháp → raise
+        if "__BUILDER__" in src:
+            raise AssertionError("Cell 4 chưa được nhúng builder")
+    print(f"✅ {n_code} code cell parse OK (ast)")
+    check_undefined_names(nb)
+    check_no_raw_version(nb)
+
+    # builder nhúng trong notebook phải giống hệt file gốc
+    nb_src = None
+    for cell in nb["cells"]:
+        if cell["cell_type"] != "code":
+            continue
+        s = "".join(cell["source"])
+        if "BEGIN BUILD_WORKFLOWS" in s:
+            nb_src = s.split("# ==== BEGIN BUILD_WORKFLOWS")[1].split("# ==== END BUILD_WORKFLOWS")[0]
+            nb_src = "\n".join(nb_src.splitlines()[1:]) + "\n"
+    assert nb_src is not None, "không tìm thấy khối builder trong notebook"
+    assert nb_src.strip() == builder_src.strip(), "builder trong notebook KHÁC scripts/build_workflows.py"
+    print("✅ builder trong notebook giống hệt scripts/build_workflows.py")
+
+    # chạy builder đó và so với workflows/*.json đã validate
+    # khối prompt nhúng trong notebook phải giống hệt scripts/prompt_presets.py
+    pns: dict = {}
+    exec(compile(presets_src, "<notebook-cell4-presets>", "exec"), pns)
+    disk = json.load(open(os.path.join(ROOT, "workflows", "prompts.json"), encoding="utf-8"))
+    gen = pns["build"]()
+    if gen != disk:
+        khac = [k for k in set(gen) | set(disk) if gen.get(k) != disk.get(k)]
+        raise AssertionError(
+            "❌ workflows/prompts.json KHÔNG KHỚP scripts/prompt_presets.py "
+            f"(lệch ở: {', '.join(sorted(khac))})\n"
+            "  Sửa: python3 scripts/prompt_presets.py   (hoặc scripts/check_sync.py --fix)")
+    print(f"✅ preset nhúng trong notebook giống hệt scripts/prompt_presets.py "
+          f"({len(gen['presets'])} preset)")
+
+    # giao diện Cell 6 phải liệt kê ĐÚNG mọi preset / chế độ negative / khung hình
+    c6 = None
+    for cell in nb["cells"]:
+        s = "".join(cell["source"])
+        if "PRESET = " in s and "NEG_MODE = " in s:
+            c6 = s
+            break
+    assert c6 is not None, "không tìm thấy Cell 6 (thiếu ô PRESET / NEG_MODE)"
+    thieu = []
+    for p in pns["PRESETS"]:
+        if '"%s"' % p["id"] not in c6:
+            thieu.append("preset " + p["id"])
+    for _id, ten in pns["NEG_MODES"]:
+        if ten not in c6:
+            thieu.append("chế độ negative " + ten)
+    for nhan in pns["SIZES"]:
+        if nhan not in c6:
+            thieu.append("khung hình " + nhan)
+    if thieu:
+        raise AssertionError(
+            "❌ Giao diện Cell 6 không khớp scripts/prompt_presets.py: " + ", ".join(thieu)
+            + "\n  Sửa: python3 scripts/make_notebook.py")
+    print(f"✅ giao diện Cell 6 liệt kê đủ {len(pns['PRESETS'])} preset / "
+          f"{len(pns['NEG_MODES'])} chế độ negative / {len(pns['SIZES'])} khung hình")
+
+    ns: dict = {}
+    exec(compile(builder_src, "<notebook-cell4>", "exec"), ns)
+    built = ns["build_all"]()
+    bad: list[str] = []
+    for name, wf in built.items():
+        rel = f"workflows/{name}.json"
+        path = os.path.join(ROOT, rel)
+        if not os.path.isfile(path):
+            bad.append(f"{rel}: KHÔNG CÓ FILE (chạy scripts/build_workflows.py)")
+            continue
+        on_disk = json.load(open(path, encoding="utf-8"))
+        if on_disk == wf:
+            continue
+        keys = sorted(set(on_disk) | set(wf))
+        for k in keys:
+            a, b = on_disk.get(k), wf.get(k)
+            if a != b:
+                bad.append(f"{rel}: node {k} khác nhau — repo={str(a)[:90]} | "
+                           f"builder={str(b)[:90]}")
+                break
+    if bad:
+        raise AssertionError(
+            "❌ workflows/ trong repo KHÔNG KHỚP với scripts/build_workflows.py:\n  - "
+            + "\n  - ".join(bad)
+            + "\n\n  Sửa: python3 scripts/build_workflows.py   (hoặc scripts/check_sync.py --fix)")
+    print(f"✅ builder trong notebook sinh đúng {len(built)} workflow đã validate")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("-o", "--out", default=OUT, help="đường dẫn file .ipynb đích")
+    a = ap.parse_args()
+
+    src = builder_source()
+    psrc = presets_source()
+    pns = presets_ns()
+    # giao diện Cell 6 được SINH từ scripts/prompt_presets.py, không gõ tay,
+    # để thêm/bớt preset không bao giờ lệch với file JSON mà Cell 6 đọc.
+    thay = {
+        "__BUILDER__": src.rstrip(),
+        "__PRESETS__": psrc.rstrip(),
+        "__PRESET_IDS__": json.dumps(
+            [pns["TUY_CHON"]] + [p["id"] for p in pns["PRESETS"]], ensure_ascii=False),
+        "__NEG_MODES__": json.dumps(
+            [ten for _id, ten in pns["NEG_MODES"]], ensure_ascii=False),
+        "__SIZE_IDS__": json.dumps(
+            [pns["SIZE_THEO_PRESET"]] + list(pns["SIZES"]), ensure_ascii=False),
+        "__SIZES_DICT__": json.dumps(pns["SIZES"], ensure_ascii=False),
+    }
+    for i, (kind, text) in enumerate(CELLS):
+        for khoa, gia_tri in thay.items():
+            if khoa in text:
+                text = text.replace(khoa, gia_tri)
+        CELLS[i] = (kind, text)
+    nb = build_notebook()
+    self_check(nb, src, psrc)
+    os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".", exist_ok=True)
+    with open(a.out, "w", encoding="utf-8") as fh:
+        json.dump(nb, fh, ensure_ascii=False, indent=1)
+    size = os.path.getsize(a.out) / 1024
+    print(f"✅ Đã ghi {os.path.relpath(a.out, ROOT)} "
+          f"({size:.0f} KB, {len(nb['cells'])} cell)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

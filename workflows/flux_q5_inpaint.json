@@ -1,0 +1,132 @@
+{
+ "1": {
+  "class_type": "UnetLoaderGGUF",
+  "inputs": {
+   "unet_name": "flux1-schnell-Q5_K_S.gguf"
+  }
+ },
+ "2": {
+  "class_type": "DualCLIPLoaderGGUF",
+  "inputs": {
+   "clip_name1": "clip_l.safetensors",
+   "clip_name2": "t5-v1_1-xxl-encoder-Q4_K_M.gguf",
+   "type": "flux"
+  }
+ },
+ "3": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "ae.safetensors"
+  }
+ },
+ "5": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "a natural human hand resting flat on a surface, realistic skin texture, even fingernails, photorealistic, sharp focus",
+   "clip": [
+    "2",
+    0
+   ]
+  }
+ },
+ "6": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "",
+   "clip": [
+    "2",
+    0
+   ]
+  }
+ },
+ "4": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "input_image.png"
+  }
+ },
+ "5m": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "mask.png"
+  }
+ },
+ "6m": {
+  "class_type": "ImageToMask",
+  "inputs": {
+   "image": [
+    "5m",
+    0
+   ],
+   "channel": "red"
+  }
+ },
+ "9e": {
+  "class_type": "VAEEncodeForInpaint",
+  "inputs": {
+   "pixels": [
+    "4",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ],
+   "mask": [
+    "6m",
+    0
+   ],
+   "grow_mask_by": 12
+  }
+ },
+ "7": {
+  "class_type": "KSampler",
+  "inputs": {
+   "seed": 0,
+   "steps": 6,
+   "cfg": 1.0,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "denoise": 0.5,
+   "model": [
+    "1",
+    0
+   ],
+   "positive": [
+    "5",
+    0
+   ],
+   "negative": [
+    "6",
+    0
+   ],
+   "latent_image": [
+    "9e",
+    0
+   ]
+  }
+ },
+ "8": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "7",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ]
+  }
+ },
+ "10": {
+  "class_type": "SaveImage",
+  "inputs": {
+   "filename_prefix": "flux/inpaint",
+   "images": [
+    "8",
+    0
+   ]
+  }
+ }
+}

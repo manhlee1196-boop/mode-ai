@@ -1,0 +1,301 @@
+{
+ "negative": "",
+ "cfg_mac_dinh": 1.0,
+ "cfg_neg_hieu_luc": 2.0,
+ "steps_toi_thieu_cfg": 8,
+ "gioi_han_tu": 60,
+ "neg_library": {
+  "chung": "blurry, low resolution, jpeg artifacts, bad anatomy, deformed, disfigured, extra limbs, mutated hands, distorted face, asymmetric eyes, cross-eyed, watermark, signature, logo, text, oversaturated, plastic skin, duplicate subject",
+  "tay": "extra fingers, fused fingers, missing fingers, too many fingers, mutated hands, deformed hands, twisted wrists, broken fingernails, hands merging into objects, blurry hands, hands growing out of sleeves",
+  "mat": "asymmetric eyes, cross-eyed, extra eyes, deformed pupils, melted face, warped mouth, distorted nose, over-smoothed skin, uncanny plastic face, double face, blurry face",
+  "chu": "text, letters, watermark, signature, logo, caption, subtitle, UI overlay, garbled characters, random symbols, misspelled words",
+  "co_the": "extra arms, extra legs, extra heads, mutated limbs, disconnected limbs, floating limbs, twisted torso, unnatural proportions, duplicate body parts, fused bodies"
+ },
+ "neg_modes": [
+  {
+   "id": "theo",
+   "ten": "theo preset"
+  },
+  {
+   "id": "chung",
+   "ten": "chung - chống lỗi tổng quát"
+  },
+  {
+   "id": "tay",
+   "ten": "tay - lỗi bàn tay"
+  },
+  {
+   "id": "mat",
+   "ten": "mat - lỗi khuôn mặt"
+  },
+  {
+   "id": "chu",
+   "ten": "chu - chữ/ký tự rác"
+  },
+  {
+   "id": "co_the",
+   "ten": "co_the - thừa chi/cơ thể"
+  },
+  {
+   "id": "tat_ca",
+   "ten": "tat_ca - tất cả"
+  },
+  {
+   "id": "tu_viet",
+   "ten": "tu_viet - tự viết ở dưới"
+  },
+  {
+   "id": "khong",
+   "ten": "khong - không dùng negative"
+  }
+ ],
+ "sizes": {
+  "832x1216 (dọc, ~1MP)": [
+   832,
+   1216
+  ],
+  "1216x832 (ngang, ~1MP)": [
+   1216,
+   832
+  ],
+  "1024x1024 (vuông, ~1MP)": [
+   1024,
+   1024
+  ],
+  "768x1024 (dọc nhỏ, nhanh)": [
+   768,
+   1024
+  ],
+  "1024x768 (ngang nhỏ, nhanh)": [
+   1024,
+   768
+  ],
+  "1344x768 (ngang rộng, ~1MP)": [
+   1344,
+   768
+  ]
+ },
+ "canh_bao": [
+  {
+   "cum": "five fingers",
+   "ly_do": "Đếm ngón khiến model chưng cất hay sinh THÊM ngón. Tả tay đang cầm/giấu gì."
+  },
+  {
+   "cum": "ten fingers",
+   "ly_do": "Đếm ngón khiến model chưng cất hay sinh THÊM ngón. Tả tay đang cầm/giấu gì."
+  },
+  {
+   "cum": "perfect hands",
+   "ly_do": "Nhấn 'perfect' không làm tay đẹp hơn. Hãy tả tư thế tay cụ thể."
+  },
+  {
+   "cum": "detailed fingers",
+   "ly_do": "Càng nhấn chi tiết ngón, ngón càng hay lỗi. Tả vật tay đang cầm."
+  },
+  {
+   "cum": "perfect anatomy",
+   "ly_do": "Cụm này vô nghĩa với FLUX; thay bằng mô tả tư thế/đạo cụ."
+  },
+  {
+   "cum": "masterpiece",
+   "ly_do": "Tag kiểu SDXL, không ăn với FLUX — chỉ làm prompt dài thêm."
+  },
+  {
+   "cum": "best quality",
+   "ly_do": "Tag kiểu SDXL, không ăn với FLUX — chỉ làm prompt dài thêm."
+  },
+  {
+   "cum": "8k",
+   "ly_do": "Tag độ phân giải kiểu SDXL, không ăn với FLUX."
+  },
+  {
+   "cum": "ultra detailed",
+   "ly_do": "Tag kiểu SDXL, không ăn với FLUX — mô tả chi tiết cụ thể thì tốt hơn."
+  }
+ ],
+ "luu_y": [
+  "cfg=1.0 trên FLUX.1-schnell → negative prompt KHÔNG được đọc (comfy/samplers.py:610).",
+  "Muốn negative có tác dụng: nâng CFG >= 2.0 trong Cell 6 (kèm STEPS >= 8, chậm hơn).",
+  "Negative chỉ vá được một phần — cách tránh lỗi tay vẫn là tả tay đang cầm/giấu/đan.",
+  "Viết câu tự nhiên: chủ thể → tư thế → bối cảnh → ánh sáng → ống kính → khung hình.",
+  "Giữ ~1 megapixel: 832×1216 (dọc), 1216×832 (ngang), 1024×1024 (vuông)."
+ ],
+ "anti_patterns": [
+  {
+   "cum": "five fingers, perfect hands, detailed fingers",
+   "ly_do": "Nhấn mạnh số ngón khiến model chưng cất hay sinh THÊM ngón. Hãy tả tay đang làm gì."
+  },
+  {
+   "cum": "best quality, masterpiece, 8k, ultra detailed",
+   "ly_do": "Tag chất lượng kiểu SDXL không ăn với FLUX; làm prompt dài mà không thêm chi tiết gì."
+  },
+  {
+   "cum": "Negative prompt mà vẫn để cfg = 1.0",
+   "ly_do": "comfy/samplers.py:610 bỏ hẳn nhánh negative ở cfg=1.0. Muốn negative có tác dụng: nâng ô CFG trong Cell 6 lên 2.0 trở lên (kèm STEPS >= 8)."
+  },
+  {
+   "cum": "Prompt quá 60 từ",
+   "ly_do": "T5-XXL cắt ở 512 token, nhưng prompt dài làm loãng ý chính. Giữ 30-45 từ."
+  },
+  {
+   "cum": "Kích thước quá xa 1 megapixel",
+   "ly_do": "VD 512×512 hay 2048×2048: schnell sinh lỗi cấu trúc. Giữ ~1MP: 832×1216 / 1024²."
+  }
+ ],
+ "presets": [
+  {
+   "id": "chan_dung_can",
+   "ten": "Chân dung cận cảnh — ít lỗi nhất",
+   "prompt": "Close-up portrait of a young Vietnamese woman, natural skin with visible pores, soft window light from the left, 85mm lens, shallow depth of field, head and shoulders framing, plain warm backdrop, subtle film grain",
+   "size": [
+    832,
+    1216
+   ],
+   "pipeline": "flux_q5_standard",
+   "rui_ro": "Thấp",
+   "ghi_chu": "Không có tay trong khung → gần như không có lỗi giải phẫu.",
+   "negative": "blurry, low resolution, jpeg artifacts, bad anatomy, deformed, disfigured, extra limbs, mutated hands, distorted face, asymmetric eyes, cross-eyed, watermark, signature, logo, text, oversaturated, plastic skin, duplicate subject, extra eyes, deformed pupils, melted face, warped mouth, distorted nose, over-smoothed skin, uncanny plastic face, double face, blurry face",
+   "negative_keys": [
+    "chung",
+    "mat"
+   ]
+  },
+  {
+   "id": "ban_than_cam_coc",
+   "ten": "Bán thân, hai tay cầm cốc",
+   "prompt": "Half-body portrait of a young Vietnamese woman sitting in a cafe, both hands wrapped around a ceramic coffee cup resting on the table, natural skin texture, soft afternoon window light, 50mm lens, shallow depth of field, blurred cafe background, film grain",
+   "size": [
+    832,
+    1216
+   ],
+   "pipeline": "flux_q5_quality",
+   "rui_ro": "Trung bình",
+   "ghi_chu": "Tay có vật bám (cốc) → render ổn định hơn tay trôi nổi.",
+   "negative": "blurry, low resolution, jpeg artifacts, bad anatomy, deformed, disfigured, extra limbs, mutated hands, distorted face, asymmetric eyes, cross-eyed, watermark, signature, logo, text, oversaturated, plastic skin, duplicate subject, extra fingers, fused fingers, missing fingers, too many fingers, deformed hands, twisted wrists, broken fingernails, hands merging into objects, blurry hands, hands growing out of sleeves",
+   "negative_keys": [
+    "chung",
+    "tay"
+   ]
+  },
+  {
+   "id": "toan_than_tui_quan",
+   "ten": "Toàn thân đứng, tay trong túi",
+   "prompt": "Full-body photograph of a young Vietnamese woman standing on a quiet street, hands tucked into the pockets of a beige trench coat, relaxed natural pose, soft golden hour light, 35mm lens, full figure in frame from head to shoes, shallow depth of field, film grain",
+   "size": [
+    832,
+    1216
+   ],
+   "pipeline": "flux_q5_standard",
+   "rui_ro": "Thấp",
+   "ghi_chu": "Tay giấu trong túi → không lộ ngón tay.",
+   "negative": "blurry, low resolution, jpeg artifacts, bad anatomy, deformed, disfigured, extra limbs, mutated hands, distorted face, asymmetric eyes, cross-eyed, watermark, signature, logo, text, oversaturated, plastic skin, duplicate subject, extra arms, extra legs, extra heads, mutated limbs, disconnected limbs, floating limbs, twisted torso, unnatural proportions, duplicate body parts, fused bodies",
+   "negative_keys": [
+    "chung",
+    "co_the"
+   ]
+  },
+  {
+   "id": "toan_than_ngoi",
+   "ten": "Toàn thân ngồi, tay đan trên đùi",
+   "prompt": "Full-body photograph of a young Vietnamese woman sitting on a wooden bench in a park, hands clasped together resting on her lap, relaxed posture, dappled sunlight through leaves, 35mm lens, entire figure in frame, natural colors, film grain",
+   "size": [
+    832,
+    1216
+   ],
+   "pipeline": "flux_q5_standard",
+   "rui_ro": "Thấp",
+   "ghi_chu": "Tay đan thành một khối kín → dễ render, ít lỗi ngón.",
+   "negative": "blurry, low resolution, jpeg artifacts, bad anatomy, deformed, disfigured, extra limbs, mutated hands, distorted face, asymmetric eyes, cross-eyed, watermark, signature, logo, text, oversaturated, plastic skin, duplicate subject, extra arms, extra legs, extra heads, mutated limbs, disconnected limbs, floating limbs, twisted torso, unnatural proportions, duplicate body parts, fused bodies",
+   "negative_keys": [
+    "chung",
+    "co_the"
+   ]
+  },
+  {
+   "id": "thoi_trang",
+   "ten": "Thời trang, tay xách túi",
+   "prompt": "Fashion editorial photograph of a Vietnamese woman in a flowing white dress standing against a textured concrete wall, one hand holding a small leather handbag at her side, dramatic side lighting, 85mm lens, full body in frame, high fashion magazine aesthetic, film grain",
+   "size": [
+    832,
+    1216
+   ],
+   "pipeline": "flux_q5_quality",
+   "rui_ro": "Trung bình",
+   "ghi_chu": "Tay xách túi có điểm tựa; vẫn nên chạy quality để sửa tay.",
+   "negative": "blurry, low resolution, jpeg artifacts, bad anatomy, deformed, disfigured, extra limbs, mutated hands, distorted face, asymmetric eyes, cross-eyed, watermark, signature, logo, text, oversaturated, plastic skin, duplicate subject, extra fingers, fused fingers, missing fingers, too many fingers, deformed hands, twisted wrists, broken fingernails, hands merging into objects, blurry hands, hands growing out of sleeves, extra arms, extra legs, extra heads, mutated limbs, disconnected limbs, floating limbs, twisted torso, unnatural proportions, duplicate body parts, fused bodies",
+   "negative_keys": [
+    "chung",
+    "tay",
+    "co_the"
+   ]
+  },
+  {
+   "id": "duong_pho",
+   "ten": "Đời thường đường phố, xách túi tote",
+   "prompt": "Candid street photograph of a young Vietnamese woman walking through a Hanoi old quarter street, carrying a canvas tote bag in her right hand, natural walking pose, overcast soft light, 35mm lens, full body in frame, documentary photography style, film grain",
+   "size": [
+    832,
+    1216
+   ],
+   "pipeline": "flux_q5_quality",
+   "rui_ro": "Trung bình",
+   "ghi_chu": "Đi bộ + túi xách: tay có việc để làm, ít sinh ngón thừa.",
+   "negative": "blurry, low resolution, jpeg artifacts, bad anatomy, deformed, disfigured, extra limbs, mutated hands, distorted face, asymmetric eyes, cross-eyed, watermark, signature, logo, text, oversaturated, plastic skin, duplicate subject, extra fingers, fused fingers, missing fingers, too many fingers, deformed hands, twisted wrists, broken fingernails, hands merging into objects, blurry hands, hands growing out of sleeves, extra arms, extra legs, extra heads, mutated limbs, disconnected limbs, floating limbs, twisted torso, unnatural proportions, duplicate body parts, fused bodies",
+   "negative_keys": [
+    "chung",
+    "tay",
+    "co_the"
+   ]
+  },
+  {
+   "id": "phong_canh",
+   "ten": "Phong cảnh (không có người)",
+   "prompt": "Wide landscape photograph of terraced rice fields in northern Vietnam at sunrise, mist drifting between the hills, warm golden light, 24mm wide angle, deep depth of field, high detail, no people",
+   "size": [
+    1216,
+    832
+   ],
+   "pipeline": "flux_q5_fast",
+   "rui_ro": "Thấp",
+   "ghi_chu": "Không có người → không có lỗi giải phẫu. 'no people' là cụm rất hiệu lực.",
+   "negative": "blurry, low resolution, jpeg artifacts, bad anatomy, deformed, disfigured, extra limbs, mutated hands, distorted face, asymmetric eyes, cross-eyed, watermark, signature, logo, text, oversaturated, plastic skin, duplicate subject, letters, caption, subtitle, UI overlay, garbled characters, random symbols, misspelled words",
+   "negative_keys": [
+    "chung",
+    "chu"
+   ]
+  },
+  {
+   "id": "san_pham",
+   "ten": "Sản phẩm studio",
+   "prompt": "Studio product photograph of a matte black ceramic coffee mug on a light oak table, soft diffused lighting from the left, subtle shadow, seamless light grey backdrop, 100mm macro lens, sharp focus, commercial photography",
+   "size": [
+    1024,
+    1024
+   ],
+   "pipeline": "flux_q5_fast",
+   "rui_ro": "Thấp",
+   "ghi_chu": "Vật vô tri → không có lỗi giải phẫu, dùng fast cho nhanh.",
+   "negative": "blurry, low resolution, jpeg artifacts, bad anatomy, deformed, disfigured, extra limbs, mutated hands, distorted face, asymmetric eyes, cross-eyed, watermark, signature, logo, text, oversaturated, plastic skin, duplicate subject, letters, caption, subtitle, UI overlay, garbled characters, random symbols, misspelled words",
+   "negative_keys": [
+    "chung",
+    "chu"
+   ]
+  },
+  {
+   "id": "anh_minh_hoa",
+   "ten": "Minh họa anime",
+   "prompt": "Anime illustration of a girl with long silver hair and aqua eyes in a school uniform, standing under cherry blossoms, soft afternoon sunlight, clean linework, cel shading, detailed background, studio anime key visual",
+   "size": [
+    832,
+    1216
+   ],
+   "pipeline": "flux_q5_fast",
+   "rui_ro": "Cao",
+   "ghi_chu": "YOLO mặt (face_yolov8m.pt) được huấn luyện trên mặt người thật nên có thể KHÔNG nhận diện được mặt anime → FaceDetailer vô tác dụng. Dùng fast, hoặc tự sửa bằng Cell 7.",
+   "negative": "blurry, low resolution, jpeg artifacts, bad anatomy, deformed, disfigured, extra limbs, mutated hands, distorted face, asymmetric eyes, cross-eyed, watermark, signature, logo, text, oversaturated, plastic skin, duplicate subject",
+   "negative_keys": [
+    "chung"
+   ]
+  }
+ ]
+}
