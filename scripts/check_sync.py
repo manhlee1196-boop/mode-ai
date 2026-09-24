@@ -59,11 +59,15 @@ def gen_workflows(tmp: str) -> dict[str, str]:
 
     _run_or_die([sys.executable, os.path.join(HERE, "build_workflows.py"), "--out", api_tmp],
                 "scripts/build_workflows.py")
+    _run_or_die([sys.executable, os.path.join(HERE, "prompt_presets.py"),
+                 "--out", os.path.join(api_tmp, "prompts.json")],
+                "scripts/prompt_presets.py")
     # node_spec.json là ĐẦU VÀO của api_to_ui (không phải artifact sinh ra)
     shutil.copy2(os.path.join(ROOT, SPEC), os.path.join(api_tmp, "node_spec.json"))
 
+    # chỉ file workflow mới qua api_to_ui; prompts.json / node_spec.json thì không
     for name in sorted(f for f in os.listdir(api_tmp)
-                       if f.endswith(".json") and f != "node_spec.json"):
+                       if f.startswith("flux_q5_") and f.endswith(".json")):
         _run_or_die([sys.executable, os.path.join(HERE, "api_to_ui.py"),
                      os.path.join(api_tmp, name),
                      "-o", os.path.join(ui_tmp, name),

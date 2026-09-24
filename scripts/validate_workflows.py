@@ -292,7 +292,7 @@ def main() -> int:
         print("❌ không tìm thấy workflow nào", file=sys.stderr)
         return 2
 
-    total_err = total_warn = 0
+    total_err = total_warn = skipped = 0
     for path in files:
         rep = Report()
         rel = os.path.relpath(path, args.repo)
@@ -307,7 +307,10 @@ def main() -> int:
         elif all(isinstance(v, dict) and "class_type" in v for v in data.values()):
             validate_api(data, spec, rep, rel, args.models_root)
         else:
-            rep.err(f"{rel}: không nhận ra định dạng (không phải API lẫn UI format)")
+            # file dữ liệu đi kèm (node_spec.json, prompts.json) — KHÔNG phải workflow
+            print(f"·  {rel:<48} bỏ qua (không phải workflow)")
+            skipped += 1
+            continue
 
         status = "✅" if not rep.errors else "❌"
         print(f"{status} {rel:<48} "
@@ -329,7 +332,7 @@ def main() -> int:
     total_err += len(rep.errors)
 
     print(f"\n{'=' * 60}\nTỔNG: {total_err} lỗi, {total_warn} cảnh báo "
-          f"trên {len(files)} workflow")
+          f"trên {len(files) - skipped} workflow")
     return 1 if total_err else 0
 
 

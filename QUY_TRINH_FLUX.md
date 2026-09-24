@@ -71,24 +71,64 @@ Cell 7 = inpaint vẽ tay · Cell 8 = chẩn đoán · Cell 9 = tunnel dự phò
 
 ---
 
-## 💡 Prompt
+## 💡 Prompt — cách viết để KHÔNG bị lỗi
 
-FLUX hiểu câu mô tả tự nhiên, không cần "tag soup". Viết theo thứ tự:
-**chủ thể → trang phục/bối cảnh → ánh sáng → ống kính → chi tiết cần giữ**.
+### Quy tắc 1: Negative prompt vô dụng trên pipeline này
+
+`comfy/samplers.py:610` — `if math.isclose(cond_scale, 1.0): uncond_ = None`.
+Với `cfg = 1.0`, ComfyUI **bỏ hẳn nhánh negative**. Viết "no extra fingers" vào cũng không
+được đọc. Mọi "chống lỗi" phải nằm trong prompt **dương**.
+
+### Quy tắc 2: Tránh lỗi tay bằng cách giấu/cấp việc cho tay
+
+FLUX.1-schnell là model chưng cất 4 bước, `cfg=1.0` → rất ít lực lái để sửa giải phẫu.
+Cách hiệu quả nhất là **đừng bắt model phải tự bịa ngón tay**:
+
+| Viết cái này | Đừng viết |
+|---|---|
+| `hands tucked into pockets` | `five fingers` |
+| `both hands wrapped around a ceramic cup` | `perfect hands` |
+| `hands clasped together on her lap` | `detailed fingers` |
+| `carrying a canvas tote bag` | `(tay trôi nổi, không tả gì)` |
+
+Nghịch lý: càng nhấn mạnh **số ngón**, model chưng cất càng hay sinh **thêm** ngón.
+
+### Quy tắc 3: FLUX hiểu câu tự nhiên, không phải tag soup
+
+Viết theo thứ tự: **chủ thể → tư thế/tay → trang phục/bối cảnh → ánh sáng → ống kính → khung hình**.
 
 ```
-photorealistic portrait of a young Vietnamese woman, natural skin texture with visible pores,
-soft window light, 85mm lens, shallow depth of field, detailed eyes and hands, five fingers,
-casual linen shirt, warm neutral background, film grain, high detail
+Close-up portrait of a young Vietnamese woman, natural skin with visible pores,
+soft window light from the left, 85mm lens, shallow depth of field,
+head and shoulders framing, plain warm backdrop, subtle film grain
 ```
 
-**Negative để trống.** Với `cfg = 1.0` thì negative không được dùng; để trống còn giúp T5
-encode nhanh hơn.
+### Quy tắc 4: Giữ ~1 megapixel
+
+832×1216 (dọc) · 1216×832 (ngang) · 1024×1024 (vuông).
+Xa khỏi ~1MP (VD 512² hay 2048²) thì schnell bắt đầu sinh lỗi cấu trúc: thừa chi, méo mặt.
+
+### Dùng preset có sẵn (đỡ phải gõ)
+
+Cell 6 có ô **PRESET** với 9 prompt đã được thiết kế sẵn, kèm nhãn rủi ro:
+
+| Preset | Rủi ro lỗi |
+|---|---|
+| `chan_dung_can` — cận cảnh, không có tay | **Thấp** |
+| `toan_than_tui_quan` — toàn thân, tay trong túi | **Thấp** |
+| `toan_than_ngoi` — ngồi, tay đan trên đùi | **Thấp** |
+| `phong_canh`, `san_pham` — không có người | **Thấp** |
+| `ban_than_cam_coc`, `thoi_trang`, `duong_pho` — tay có việc làm | Trung bình |
+| `anh_minh_hoa` — anime (YOLO mặt không nhận diện được mặt anime) | **Cao** |
+
+Danh sách nằm ở `workflows/prompts.json`, nguồn là `scripts/prompt_presets.py`.
 
 Mẹo nhanh:
-- Muốn đổi góc máy: thêm `low angle` / `close-up` / `full body shot`.
-- Muốn cố định nhân vật: giữ nguyên `seed`, chỉ đổi một cụm mô tả mỗi lần.
-- Tay vẫn lỗi: tăng denoise tay `0.28 → 0.35`, hoặc dùng Cell 7 tô lên bàn tay.
+- Đổi góc máy: thêm `low angle` / `close-up` / `full body in frame`.
+- Cố định nhân vật: giữ nguyên `seed`, chỉ đổi một cụm mô tả mỗi lần.
+- **Tay vẫn lỗi**: chuyển sang `flux_q5_quality`, tăng denoise tay `0.28 → 0.35`,
+  hoặc dùng Cell 7 tô lên bàn tay rồi inpaint.
+- **Mặt vẫn lỗi**: đừng dùng `flux_q5_fast` (không có FaceDetailer); dùng `standard`/`quality`.
 
 ---
 

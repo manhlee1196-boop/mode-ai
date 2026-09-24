@@ -19,6 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 OUT = os.path.join(ROOT, "ComfyUI_Colab_WAI_fixed.ipynb")
 BUILDER = os.path.join(HERE, "build_workflows.py")
+PRESETS = os.path.join(HERE, "prompt_presets.py")
 
 START = "# ----------------------------------------------------------------- model (khớp Cell 3)"
 END = "def main() -> int:"
@@ -32,6 +33,20 @@ def builder_source() -> str:
     head = ('"""Khối sinh workflow — NHÚNG TỪ scripts/build_workflows.py (đừng sửa tay ở đây,'
             ' hãy sửa file gốc rồi chạy lại scripts/make_notebook.py)."""\n'
             "from typing import Any, Dict\n\n")
+    return head + src[i:j].rstrip() + "\n"
+
+
+PSTART = "NEGATIVE = "
+PEND = "def main() -> int:"
+
+
+def presets_source() -> str:
+    """Đoạn code thư viện prompt — nhúng nguyên văn vào notebook."""
+    src = open(PRESETS, encoding="utf-8").read()
+    i = src.index(PSTART)
+    j = src.index(PEND)
+    head = ('"""Khối thư viện prompt — NHÚNG TỪ scripts/prompt_presets.py '
+            '(đừng sửa tay ở đây)."""\n\n')
     return head + src[i:j].rstrip() + "\n"
 
 
@@ -486,6 +501,10 @@ import os, json, subprocess
 __BUILDER__
 # ==== END BUILD_WORKFLOWS ====
 
+# ==== BEGIN PROMPT_PRESETS (nhúng từ scripts/prompt_presets.py) ====
+__PRESETS__
+# ==== END PROMPT_PRESETS ====
+
 os.makedirs(WORKFLOW_DIR, exist_ok=True)
 COMFY = '/content/ComfyUI'
 written = []
@@ -497,6 +516,17 @@ for name, wf in build_all().items():
             json.dump(wf, f, ensure_ascii=False, indent=1)
         written.append(path)
     print(f'✅ {name}.json ({len(wf)} node)')
+
+# thư viện prompt — Cell 6 đọc để hiện danh sách chọn
+prompts_doc = {'negative': NEGATIVE,
+               'luu_y': [f'cfg=1.0 trên FLUX.1-schnell → negative KHÔNG được dùng'],
+               'anti_patterns': [{'cum': a, 'ly_do': b} for a, b in ANTI_PATTERNS],
+               'presets': PRESETS}
+for dest_dir in (WORKFLOW_DIR, f'{COMFY}/input'):
+    os.makedirs(dest_dir, exist_ok=True)
+    with open(os.path.join(dest_dir, 'prompts.json'), 'w', encoding='utf-8') as f:
+        json.dump(prompts_doc, f, ensure_ascii=False, indent=1)
+print(f'✅ prompts.json ({len(PRESETS)} preset)')
 
 # bản UI (có layout, kéo-thả vào giao diện) — tải từ repo, không có thì bỏ qua
 if TAI_BAN_UI_TU_REPO:
@@ -654,10 +684,11 @@ print('Giờ chạy Cell 6 để tạo ảnh ngay trong Colab, hoặc Cell 8 đ�
 # =========================================================================== CELL 6
 code(r'''
 # @title 🖼 CELL 6 — Tạo ảnh ngay trong Colab (headless, không cần mở giao diện)
+PRESET = "chan_dung_can"  # @param ["(tự viết prompt ở dưới)", "chan_dung_can", "ban_than_cam_coc", "toan_than_tui_quan", "toan_than_ngoi", "thoi_trang", "duong_pho", "phong_canh", "san_pham", "anh_minh_hoa"]
 PIPELINE = "flux_q5_standard"  # @param ["flux_q5_fast", "flux_q5_standard", "flux_q5_quality", "flux_q5_hires", "flux_q5_inpaint"]
-PROMPT = "photorealistic portrait of a young Vietnamese woman, natural skin texture with visible pores, soft window light, 85mm lens, shallow depth of field, detailed eyes and hands, five fingers, casual linen shirt, warm neutral background, film grain, high detail"  # @param {type:"string"}
-WIDTH = 1024  # @param {type:"integer"}
-HEIGHT = 1024  # @param {type:"integer"}
+PROMPT = "Close-up portrait of a young Vietnamese woman, natural skin with visible pores, soft window light from the left, 85mm lens, shallow depth of field, head and shoulders framing, plain warm backdrop, subtle film grain"  # @param {type:"string"}
+WIDTH = 832  # @param {type:"integer"}
+HEIGHT = 1216  # @param {type:"integer"}
 SEED = -1  # @param {type:"integer"}
 SO_ANH = 1  # @param {type:"integer"}
 LUU_VAO_DRIVE = False  # @param {type:"boolean"}
@@ -670,6 +701,35 @@ COMFY = 'http://127.0.0.1:8188'
 WORKFLOW_DIR = '/content/workflows'
 OUT = '/content/ComfyUI/output'
 IN_DIR = '/content/ComfyUI/input'
+TUY_CHON = "(tự viết prompt ở dưới)"
+
+# BỎ QUA negative: cfg=1.0 trên schnell → comfy/samplers.py:610 bỏ hẳn nhánh negative.
+# Viết negative vào đây cũng không được đọc, chỉ tốn thêm một lần encode T5.
+NEGATIVE = ""
+
+
+def _presets():
+    try:
+        with open(f"{WORKFLOW_DIR}/prompts.json", encoding="utf-8") as f:
+            return {p["id"]: p for p in json.load(f)["presets"]}
+    except Exception as e:
+        print(f'⚠️ Không đọc được prompts.json ({e}) — dùng prompt bạn gõ tay')
+        return {}
+
+
+def apply_preset(preset_id, prompt, pipeline, width, height):
+    """Nếu chọn preset thì preset thắng (prompt + size + pipeline); chọn TUY_CHON thì giữ nguyên."""
+    if preset_id == TUY_CHON:
+        return prompt, pipeline, int(width), int(height)
+    p = _presets().get(preset_id)
+    if not p:
+        print(f'⚠️ Không thấy preset "{preset_id}" — giữ nguyên tuỳ chọn của bạn')
+        return prompt, pipeline, int(width), int(height)
+    print(f'📋 Preset: {p["ten"]}  | rủi ro lỗi: {p["rui_ro"]}')
+    print(f'   {p["pipeline"]} @ {p["size"][0]}×{p["size"][1]}')
+    print(f'   {p["ghi_chu"]}')
+    return p["prompt"], p["pipeline"], int(p["size"][0]), int(p["size"][1])
+
 
 def _health():
     try:
@@ -746,8 +806,9 @@ def run(wf, timeout=600):
     raise TimeoutError(f'Quá {timeout}s chưa xong — xem /content/comfyui.log')
 
 def generate(prompt=PROMPT, pipeline=PIPELINE, width=WIDTH, height=HEIGHT, seed=SEED,
-             n=SO_ANH, negative='', show=True):
+             n=SO_ANH, negative=NEGATIVE, show=True, preset=PRESET):
     """Tạo n ảnh, trả về danh sách đường dẫn file."""
+    prompt, pipeline, width, height = apply_preset(preset, prompt, pipeline, width, height)
     results = []
     for i in range(int(n)):
         s = int(seed) if int(seed) >= 0 else random.randint(0, 2**31 - 1)
@@ -770,6 +831,7 @@ def generate(prompt=PROMPT, pipeline=PIPELINE, width=WIDTH, height=HEIGHT, seed=
     return results
 
 anh = generate()
+print(f'\\n💡 Prompt đang dùng: {PROMPT[:120]}...' if len(PROMPT) > 120 else f'\\n💡 Prompt đang dùng: {PROMPT}')
 print(f'\n✅ {len(anh)} ảnh trong {OUT}')
 ''')
 
@@ -1016,18 +1078,45 @@ md("""
 **Nếu OOM:** giảm `WIDTH/HEIGHT` về 832×832 · đặt `VAE_PREC=cpu-vae` · `PREVIEW=none` ·
 `VRAM_MODE=lowvram` · tắt Cell 7 (Gradio) khi không dùng.
 
-## 💡 Prompt cho FLUX
+## 💡 Prompt — cách viết để KHÔNG bị lỗi
 
-FLUX hiểu câu mô tả tự nhiên tốt hơn "tag soup". Viết như mô tả ảnh cho nhiếp ảnh gia:
-chủ thể → trang phục/bối cảnh → ánh sáng → ống kính → chi tiết cần giữ.
+### Negative prompt vô dụng trên pipeline này
+
+`comfy/samplers.py:610` — `if math.isclose(cond_scale, 1.0): uncond_ = None`.
+Với cfg=1.0, ComfyUI **bỏ hẳn nhánh negative**. Viết "no extra fingers" vào cũng không được đọc.
+Mọi "chống lỗi" phải nằm trong prompt **dương**.
+
+### Tránh lỗi tay: đừng bắt model tự bịa ngón tay
+
+| Viết cái này | Đừng viết |
+|---|---|
+| `hands tucked into pockets` | `five fingers` |
+| `both hands wrapped around a ceramic cup` | `perfect hands` |
+| `hands clasped together on her lap` | `detailed fingers` |
+| `carrying a canvas tote bag` | (tay trôi nổi, không tả gì) |
+
+Nghịch lý: càng nhấn mạnh số ngón, model chưng cất càng hay sinh **thêm** ngón.
+
+### Cấu trúc prompt ăn với FLUX
+
+**chủ thể → tư thế/tay → trang phục/bối cảnh → ánh sáng → ống kính → khung hình**
 
 ```
-photorealistic portrait of a young Vietnamese woman, natural skin texture with visible pores,
-soft window light, 85mm lens, shallow depth of field, detailed eyes and hands, five fingers,
-casual linen shirt, warm neutral background, film grain, high detail
+Close-up portrait of a young Vietnamese woman, natural skin with visible pores, soft window
+light from the left, 85mm lens, shallow depth of field, head and shoulders framing, plain
+warm backdrop, subtle film grain
 ```
 
-Negative để trống: với cfg = 1.0, negative không được dùng — để trống còn giúp T5 encode nhanh hơn.
+Giữ ~1 megapixel (832×1216 / 1216×832 / 1024²) — xa khỏi ~1MP thì schnell sinh lỗi cấu trúc.
+
+### Dùng preset có sẵn
+
+Ô **PRESET** ở Cell 6 có 9 prompt kèm nhãn rủi ro: `chan_dung_can` (cận cảnh, không có tay),
+`toan_than_tui_quan` (tay trong túi), `toan_than_ngoi` (tay đan) — rủi ro **Thấp**;
+`ban_than_cam_coc`, `thoi_trang`, `duong_pho` — Trung bình; `anh_minh_hoa` — **Cao**
+(YOLO mặt huấn luyện trên mặt người thật nên không nhận diện được mặt anime).
+
+Nguồn: `scripts/prompt_presets.py` → `workflows/prompts.json`.
 
 ## 🧪 Tự kiểm tra (không cần GPU, không cần mạng)
 
@@ -1166,7 +1255,7 @@ def check_undefined_names(nb: dict) -> None:
     print("✅ không có tên dùng mà chưa định nghĩa")
 
 
-def self_check(nb: dict, builder_src: str) -> None:
+def self_check(nb: dict, builder_src: str, presets_src: str) -> None:
     """Kiểm tra notebook trước khi ghi ra đĩa."""
     n_code = 0
     for i, cell in enumerate(nb["cells"]):
@@ -1195,6 +1284,18 @@ def self_check(nb: dict, builder_src: str) -> None:
     print("✅ builder trong notebook giống hệt scripts/build_workflows.py")
 
     # chạy builder đó và so với workflows/*.json đã validate
+    # khối prompt nhúng trong notebook phải giống hệt scripts/prompt_presets.py
+    pns: dict = {}
+    exec(compile(presets_src, "<notebook-cell4-presets>", "exec"), pns)
+    disk = json.load(open(os.path.join(ROOT, "workflows", "prompts.json"), encoding="utf-8"))
+    gen = pns["build"]()
+    if gen["presets"] != disk["presets"] or gen["negative"] != disk["negative"]:
+        raise AssertionError(
+            "❌ workflows/prompts.json KHÔNG KHỚP scripts/prompt_presets.py\n"
+            "  Sửa: python3 scripts/prompt_presets.py   (hoặc scripts/check_sync.py --fix)")
+    print(f"✅ preset nhúng trong notebook giống hệt scripts/prompt_presets.py "
+          f"({len(gen['presets'])} preset)")
+
     ns: dict = {}
     exec(compile(builder_src, "<notebook-cell4>", "exec"), ns)
     built = ns["build_all"]()
@@ -1229,11 +1330,15 @@ def main() -> int:
     a = ap.parse_args()
 
     src = builder_source()
+    psrc = presets_source()
     for i, (kind, text) in enumerate(CELLS):
         if "__BUILDER__" in text:
-            CELLS[i] = (kind, text.replace("__BUILDER__", src.rstrip()))
+            text = text.replace("__BUILDER__", src.rstrip())
+        if "__PRESETS__" in text:
+            text = text.replace("__PRESETS__", psrc.rstrip())
+        CELLS[i] = (kind, text)
     nb = build_notebook()
-    self_check(nb, src)
+    self_check(nb, src, psrc)
     os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".", exist_ok=True)
     with open(a.out, "w", encoding="utf-8") as fh:
         json.dump(nb, fh, ensure_ascii=False, indent=1)

@@ -25,6 +25,11 @@ Chi tiết tham số, prompt và xử lý lỗi: [`QUY_TRINH_FLUX.md`](QUY_TRINH
 | `flux_q5_hires` | 17 | ~70-90 s |
 | `flux_q5_inpaint` | 12 | ~15-25 s |
 
+**9 prompt preset có sẵn** (`workflows/prompts.json`, nguồn `scripts/prompt_presets.py`) —
+chọn trong ô PRESET ở Cell 6. Chúng được viết để tránh lỗi giải phẫu: tả rõ tay đang cầm/giấu/
+đan thay vì đòi "five fingers", vì với `cfg=1.0` ComfyUI bỏ hẳn nhánh negative
+(`comfy/samplers.py:610`) nên negative prompt không thể sửa được gì.
+
 Model ~12 GB: UNET `flux1-schnell-Q5_K_S.gguf` (8.26) + T5-XXL `Q4_K_M` (2.9) +
 CLIP-L (0.25) + VAE `ae.safetensors` (0.34) + YOLO mặt/tay + SAM.
 
