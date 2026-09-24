@@ -63,7 +63,7 @@ Thời gian đo trên Colab free T4, `PREVIEW=taesd`, model trên Drive.
 
 | File | Là gì |
 |---|---|
-| `prompts.json` | 9 prompt preset thiết kế để tránh lỗi (kèm nhãn rủi ro + anti-pattern). Nguồn: `scripts/prompt_presets.py`. Cell 6 đọc file này để hiện ô chọn PRESET. |
+| `prompts.json` | 9 prompt preset thiết kế để tránh lỗi (kèm nhãn rủi ro + anti-pattern), **thư viện negative** 5 khối (`chung`/`tay`/`mat`/`chu`/`co_the`), 9 chế độ chọn và 6 khung hình ~1MP. Nguồn: `scripts/prompt_presets.py`. Cell 6 đọc file này để dựng toàn bộ giao diện (ô PRESET, NEG_MODE, SIZE) và để quét cụm rủi ro trong prompt. |
 | `node_spec.json` | `INPUT_TYPES` / `RETURN_TYPES` trích tự động từ mã nguồn ComfyUI + GGUF + Impact Pack/Subpack (891 node). Sinh bằng `scripts/node_spec.py`. Cần thiết để `validate_workflows.py` chạy mà không phải clone lại. |
 
 ## Kiểm tra

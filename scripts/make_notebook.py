@@ -50,6 +50,13 @@ def presets_source() -> str:
     return head + src[i:j].rstrip() + "\n"
 
 
+def presets_ns() -> dict:
+    """Chạy khối thư viện prompt để lấy dữ liệu sinh giao diện (dropdown, size...)."""
+    ns: dict = {}
+    exec(compile(presets_source(), "<presets>", "exec"), ns)
+    return ns
+
+
 CELLS: list[tuple[str, str]] = []
 
 
@@ -684,16 +691,38 @@ print('Giờ chạy Cell 6 để tạo ảnh ngay trong Colab, hoặc Cell 8 đ�
 # =========================================================================== CELL 6
 code(r'''
 # @title 🖼 CELL 6 — Tạo ảnh ngay trong Colab (headless, không cần mở giao diện)
-PRESET = "chan_dung_can"  # @param ["(tự viết prompt ở dưới)", "chan_dung_can", "ban_than_cam_coc", "toan_than_tui_quan", "toan_than_ngoi", "thoi_trang", "duong_pho", "phong_canh", "san_pham", "anh_minh_hoa"]
+# ╔═════════════════════ 1) CHỌN CẢNH ═════════════════════╗
+PRESET = "chan_dung_can"  # @param __PRESET_IDS__
 PIPELINE = "flux_q5_standard"  # @param ["flux_q5_fast", "flux_q5_standard", "flux_q5_quality", "flux_q5_hires", "flux_q5_inpaint"]
+
+# ╔═════════════════════ 2) PROMPT DƯƠNG ═══════════════════╗
 PROMPT = "Close-up portrait of a young Vietnamese woman, natural skin with visible pores, soft window light from the left, 85mm lens, shallow depth of field, head and shoulders framing, plain warm backdrop, subtle film grain"  # @param {type:"string"}
-WIDTH = 832  # @param {type:"integer"}
-HEIGHT = 1216  # @param {type:"integer"}
+THEM_VAO_PROMPT = ""  # @param {type:"string"}
+
+# ╔═════════════════════ 3) NEGATIVE PROMPT ═════════════════╗
+# ⚠️ comfy/samplers.py:610 — ở cfg = 1.0 ComfyUI BỎ HẲN nhánh negative,
+# nên muốn negative này có tác dụng phải nâng CFG (ô dưới) lên 2.0 trở lên.
+NEG_MODE = "theo preset"  # @param __NEG_MODES__
+NEGATIVE_PROMPT = ""  # @param {type:"string"}
+CFG = 1.0  # @param {type:"slider", min:1, max:5, step:0.5}
+TU_DONG_BAT_CFG = True  # @param {type:"boolean"}
+
+# ╔═════════════════════ 4) SAMPLING ════════════════════════╗
+STEPS = 4  # @param {type:"slider", min:1, max:20, step:1}
+BC_SUA_CHI_TIET = 4  # @param {type:"slider", min:2, max:12, step:1}
+SAMPLER = "euler"  # @param ["euler", "euler_ancestral", "heun", "dpmpp_2m", "dpmpp_2m_sde", "lcm", "ddim", "uni_pc"]
+SCHEDULER = "simple"  # @param ["simple", "normal", "beta", "karras", "sgm_uniform", "exponential"]
 SEED = -1  # @param {type:"integer"}
-SO_ANH = 1  # @param {type:"integer"}
+SO_ANH = 1  # @param {type:"slider", min:1, max:4, step:1}
+
+# ╔═════════════════════ 5) KHUNG HÌNH & ĐẦU RA ═════════════╗
+SIZE = "theo preset (khuyên dùng)"  # @param __SIZE_IDS__
+TEN_FILE = "flux/anh"  # @param {type:"string"}
+NHIEU_PROMPT = ""  # @param {type:"string"}
 LUU_VAO_DRIVE = False  # @param {type:"boolean"}
 
-import os, json, time, random, requests
+import os, re, json, time, random
+import requests
 from PIL import Image
 from IPython.display import display
 
@@ -702,100 +731,204 @@ WORKFLOW_DIR = '/content/workflows'
 OUT = '/content/ComfyUI/output'
 IN_DIR = '/content/ComfyUI/input'
 TUY_CHON = "(tự viết prompt ở dưới)"
-
-# BỎ QUA negative: cfg=1.0 trên schnell → comfy/samplers.py:610 bỏ hẳn nhánh negative.
-# Viết negative vào đây cũng không được đọc, chỉ tốn thêm một lần encode T5.
-NEGATIVE = ""
+SIZE_THEO_PRESET = "theo preset (khuyên dùng)"
+SIZES = __SIZES_DICT__
 
 
-def _presets():
+def _doc():
+    """Đọc thư viện prompt do Cell 4 sinh ra (presets + negative + cảnh báo)."""
     try:
-        with open(f"{WORKFLOW_DIR}/prompts.json", encoding="utf-8") as f:
-            return {p["id"]: p for p in json.load(f)["presets"]}
+        with open(os.path.join(WORKFLOW_DIR, 'prompts.json'), encoding='utf-8') as f:
+            return json.load(f)
     except Exception as e:
-        print(f'⚠️ Không đọc được prompts.json ({e}) — dùng prompt bạn gõ tay')
+        print('⚠️ Không đọc được prompts.json (%s) — bỏ qua preset/negative có sẵn' % e)
         return {}
 
 
-def apply_preset(preset_id, prompt, pipeline, width, height):
-    """Nếu chọn preset thì preset thắng (prompt + size + pipeline); chọn TUY_CHON thì giữ nguyên."""
-    if preset_id == TUY_CHON:
-        return prompt, pipeline, int(width), int(height)
-    p = _presets().get(preset_id)
-    if not p:
-        print(f'⚠️ Không thấy preset "{preset_id}" — giữ nguyên tuỳ chọn của bạn')
-        return prompt, pipeline, int(width), int(height)
-    print(f'📋 Preset: {p["ten"]}  | rủi ro lỗi: {p["rui_ro"]}')
-    print(f'   {p["pipeline"]} @ {p["size"][0]}×{p["size"][1]}')
-    print(f'   {p["ghi_chu"]}')
-    return p["prompt"], p["pipeline"], int(p["size"][0]), int(p["size"][1])
+LIB = _doc()
+PRESETS = {p['id']: p for p in LIB.get('presets', [])}
+NEG_LIB = LIB.get('neg_library', {})
+CANH_BAO = LIB.get('canh_bao', [])
+CFG_NEG = float(LIB.get('cfg_neg_hieu_luc', 2.0))
+STEPS_CFG = int(LIB.get('steps_toi_thieu_cfg', 8))
+GIOI_HAN_TU = int(LIB.get('gioi_han_tu', 60))
+
+
+def _key(nhan):
+    """'tay - lỗi bàn tay' → 'tay' (đầu nhãn chính là id khối negative)."""
+    return nhan.split(' - ')[0].strip().split(' ')[0]
+
+
+def _noi(*cac_doan):
+    """Ghép các đoạn negative, bỏ cụm trùng (giữ thứ tự, không phá dấu phẩy)."""
+    out, seen = [], set()
+    for doan in cac_doan:
+        for cum in str(doan or '').split(','):
+            cum = cum.strip().rstrip('.')
+            if cum and cum.lower() not in seen:
+                seen.add(cum.lower())
+                out.append(cum)
+    return ', '.join(out)
+
+
+def gop_negative(mode, tu_viet, preset_doc):
+    """Trả về chuỗi negative theo NEG_MODE (đọc danh sách từ prompts.json)."""
+    key = _key(mode)
+    if key == 'khong':
+        return ''
+    if key == 'tu_viet':
+        return _noi(tu_viet)
+    if key == 'theo':
+        return _noi(preset_doc.get('negative', ''), tu_viet)
+    if key == 'tat_ca':
+        return _noi(*list(NEG_LIB.values()), tu_viet)
+    return _noi(NEG_LIB.get(key, ''), tu_viet)
+
+
+def apply_preset(preset_id, prompt, pipeline, them=''):
+    """Chọn preset → preset thắng (prompt + pipeline + size + negative)."""
+    them = (them or '').strip()
+    doc = PRESETS.get(preset_id)
+    if preset_id == TUY_CHON or doc is None:
+        if preset_id != TUY_CHON:
+            print('⚠️ Không thấy preset "%s" — giữ tuỳ chọn của bạn' % preset_id)
+        pos = ('%s, %s' % (prompt.rstrip(' ,'), them)) if them else prompt
+        return pos, pipeline, None, {}
+    print('📋 %s' % doc['ten'])
+    print('   rủi ro: %s  |  %s @ %sx%s' % (
+        doc['rui_ro'], doc['pipeline'], doc['size'][0], doc['size'][1]))
+    print('   %s' % doc['ghi_chu'])
+    pos = ('%s, %s' % (doc['prompt'].rstrip(' ,'), them)) if them else doc['prompt']
+    return pos, doc['pipeline'], (int(doc['size'][0]), int(doc['size'][1])), dict(doc)
+
+
+def chon_size(nhan, preset_size, mac_dinh=(832, 1216)):
+    if nhan != SIZE_THEO_PRESET and nhan in SIZES:
+        return tuple(SIZES[nhan])
+    return tuple(preset_size) if preset_size else mac_dinh
+
+
+def xu_ly_cfg(negative, cfg, steps, tu_dong):
+    """cfg = 1.0 → negative bị bỏ qua (samplers.py:610). Tự nâng nếu được phép."""
+    cfg, steps, note = float(cfg), int(steps), ''
+    if negative and cfg <= 1.0:
+        if tu_dong:
+            cfg, steps = CFG_NEG, max(steps, STEPS_CFG)
+            note = ('đang dùng negative → tự nâng cfg=%.1f, steps=%d (chậm hơn cfg=1.0). '
+                    'Muốn nhanh lại: NEG_MODE = "khong - không dùng negative".' % (cfg, steps))
+        else:
+            note = ('⚠️ cfg=1.0 → ComfyUI BỎ QUA negative (comfy/samplers.py:610). '
+                    'Hãy nâng CFG hoặc bật TU_DONG_BAT_CFG.')
+    elif negative and steps < STEPS_CFG:
+        note = ('⚠️ cfg=%.1f mà chỉ %d bước: model chưng cất dễ ra ảnh cháy màu, '
+                'nên để ít nhất %d bước.' % (cfg, steps, STEPS_CFG))
+    return cfg, steps, note
+
+
+def kiem_tra(prompt, w, h, cfg, steps, negative):
+    """Quét prompt trước khi chạy — phát hiện cụm hay gây lỗi, đỡ mất một lượt generate."""
+    low = (prompt or '').lower()
+    for cb in CANH_BAO:
+        if cb['cum'] in low:
+            print('⚠️ Prompt có "%s": %s' % (cb['cum'], cb['ly_do']))
+    n_tu = len(re.findall(r"[A-Za-z0-9'-]+", prompt or ''))
+    if n_tu > GIOI_HAN_TU:
+        print('⚠️ Prompt %d từ (> %d): ý chính bị loãng, nên cắt bớt.' % (n_tu, GIOI_HAN_TU))
+    mp = w * h / 1e6
+    if not (0.45 <= mp <= 1.7):
+        print('⚠️ %dx%d = %.2f MP, xa ~1MP → schnell hay sinh lỗi cấu trúc.' % (w, h, mp))
+    if negative and cfg <= 1.0:
+        print('⚠️ Có negative mà cfg=1.0 → negative KHÔNG được đọc.')
+    if negative and cfg > 1.0:
+        print('✅ Negative đang BẬT (cfg=%.1f > 1.0, %d từ).' % (
+            cfg, len(negative.split(','))))
 
 
 def _health():
     try:
-        return requests.get(f'{COMFY}/system_stats', timeout=5).status_code == 200
+        return requests.get('%s/system_stats' % COMFY, timeout=5).status_code == 200
     except Exception:
         return False
 
-if not _health():
-    raise RuntimeError('❌ ComfyUI chưa chạy — chạy Cell 5 trước')
 
 def _nodes(wf, class_type):
     return [k for k, v in wf.items() if v.get('class_type') == class_type]
 
-def prepare(pipeline, prompt, width, height, seed, negative=''):
-    path = os.path.join(WORKFLOW_DIR, f'{pipeline}.json')
+
+def _pos_neg(wf):
+    """Node 5 = prompt dương, node 6 = negative (đúng quy ước builder).
+
+    Không đoán theo độ dài text: negative dài hơn prompt sẽ làm heuristic cũ bị ngược.
+    """
+    enc = _nodes(wf, 'CLIPTextEncode')
+    if '5' in enc:
+        return '5', ('6' if '6' in enc else None)
+    enc = sorted(enc, key=lambda k: -len(str(wf[k]['inputs'].get('text', ''))))
+    return (enc[0] if enc else None), (enc[1] if len(enc) > 1 else None)
+
+
+def prepare(pipeline, prompt, w, h, seed, negative='', cfg=1.0, steps=4, bc_sua=4,
+            sampler='euler', scheduler='simple', ten_file='flux/anh', batch=1):
+    path = os.path.join(WORKFLOW_DIR, '%s.json' % pipeline)
     if not os.path.isfile(path):
-        raise FileNotFoundError(f'{path} không có — chạy Cell 4 trước')
+        raise FileNotFoundError('%s không có — chạy Cell 4 trước' % path)
     wf = json.load(open(path, encoding='utf-8'))
 
-    # inpaint đọc ảnh có sẵn trong ComfyUI/input, không tự tạo được từ prompt
-    if any(v.get('class_type') == 'LoadImage' for v in wf.values()):
-        for nid in _nodes(wf, 'LoadImage'):
-            name = wf[nid]['inputs'].get('image', '')
-            if not os.path.isfile(os.path.join(IN_DIR, name)):
-                raise FileNotFoundError(
-                    f'❌ {pipeline} cần file {IN_DIR}/{name} — hãy upload ảnh + mask '
-                    f'vào đó, hoặc dùng Cell 7 (vẽ mask bằng chuột, tự upload).')
+    for nid in _nodes(wf, 'LoadImage'):
+        name = wf[nid]['inputs'].get('image', '')
+        if not os.path.isfile(os.path.join(IN_DIR, name)):
+            raise FileNotFoundError(
+                '❌ %s cần file %s/%s — hãy upload ảnh + mask vào đó, '
+                'hoặc dùng Cell 7 (vẽ mask bằng chuột, tự upload).'
+                % (pipeline, IN_DIR, name))
 
-    # prompt dương = node CLIPTextEncode có text dài nhất (node "5" của builder)
-    pos_ids = sorted(_nodes(wf, 'CLIPTextEncode'),
-                     key=lambda k: -len(str(wf[k]['inputs'].get('text', ''))))
-    if pos_ids:
-        wf[pos_ids[0]]['inputs']['text'] = prompt
-    if negative:
-        for nid in _nodes(wf, 'CLIPTextEncode'):
-            if nid != pos_ids[0]:
-                wf[nid]['inputs']['text'] = negative
+    pos, neg = _pos_neg(wf)
+    if pos:
+        wf[pos]['inputs']['text'] = prompt
+    if neg:
+        wf[neg]['inputs']['text'] = negative
 
     for nid in _nodes(wf, 'EmptyLatentImage'):
-        wf[nid]['inputs']['width'] = int(width)
-        wf[nid]['inputs']['height'] = int(height)
+        wf[nid]['inputs']['width'] = int(w)
+        wf[nid]['inputs']['height'] = int(h)
+        if 'batch_size' in wf[nid]['inputs']:
+            wf[nid]['inputs']['batch_size'] = int(batch)
 
     for i, nid in enumerate(sorted(_nodes(wf, 'KSampler'), key=int)):
-        wf[nid]['inputs']['seed'] = seed + i
+        wf[nid]['inputs'].update(
+            seed=int(seed) + i, steps=int(steps), cfg=float(cfg),
+            sampler_name=sampler, scheduler=scheduler)
+    # FaceDetailer chạy trên vùng crop nhỏ: bước riêng (BC_SUA_CHI_TIET), nhưng cfg
+    # theo ô CFG để negative có tác dụng cả ở bước sửa mặt / sửa tay.
     for i, nid in enumerate(sorted(_nodes(wf, 'FaceDetailer'), key=int)):
-        wf[nid]['inputs']['seed'] = seed + 100 + i
+        wf[nid]['inputs'].update(
+            seed=int(seed) + 100 + i, steps=int(bc_sua), cfg=float(cfg),
+            sampler_name=sampler, scheduler=scheduler)
+
+    for nid in _nodes(wf, 'SaveImage'):
+        wf[nid]['inputs']['filename_prefix'] = ten_file
     return wf
 
-def run(wf, timeout=600):
-    r = requests.post(f'{COMFY}/prompt', json={'prompt': wf}, timeout=30)
+
+def run(wf, timeout=900):
+    r = requests.post('%s/prompt' % COMFY, json={'prompt': wf}, timeout=30)
     if r.status_code != 200:
-        raise RuntimeError(f'ComfyUI từ chối prompt (HTTP {r.status_code}):\n'
-                           f'{json.dumps(r.json(), ensure_ascii=False)[:1500]}')
+        raise RuntimeError('ComfyUI từ chối prompt (HTTP %s):\n%s'
+                           % (r.status_code, json.dumps(r.json(), ensure_ascii=False)[:1500]))
     pid = r.json()['prompt_id']
-    print(f'📤 prompt_id={pid}')
+    print('📤 prompt_id=%s' % pid)
     t0 = time.time()
     while time.time() - t0 < timeout:
         time.sleep(2)
         try:
-            h = requests.get(f'{COMFY}/history/{pid}', timeout=10).json()
+            h = requests.get('%s/history/%s' % (COMFY, pid), timeout=10).json()
         except Exception:
             continue
         if pid in h:
             st = h[pid].get('status', {})
             if st.get('status_str') == 'error':
-                raise RuntimeError(f'ComfyUI báo lỗi khi chạy: {json.dumps(st, ensure_ascii=False)[:1200]}')
+                raise RuntimeError('ComfyUI báo lỗi khi chạy: %s'
+                                   % json.dumps(st, ensure_ascii=False)[:1200])
             files = []
             for node_out in h[pid].get('outputs', {}).values():
                 for im in node_out.get('images', []):
@@ -803,36 +936,100 @@ def run(wf, timeout=600):
                         continue
                     files.append(os.path.join(OUT, im.get('subfolder', ''), im['filename']))
             return [f for f in files if os.path.isfile(f)]
-    raise TimeoutError(f'Quá {timeout}s chưa xong — xem /content/comfyui.log')
+    raise TimeoutError('Quá %ds chưa xong — xem /content/comfyui.log' % timeout)
 
-def generate(prompt=PROMPT, pipeline=PIPELINE, width=WIDTH, height=HEIGHT, seed=SEED,
-             n=SO_ANH, negative=NEGATIVE, show=True, preset=PRESET):
-    """Tạo n ảnh, trả về danh sách đường dẫn file."""
-    prompt, pipeline, width, height = apply_preset(preset, prompt, pipeline, width, height)
-    results = []
-    for i in range(int(n)):
-        s = int(seed) if int(seed) >= 0 else random.randint(0, 2**31 - 1)
-        s = s + i if int(seed) >= 0 else s
-        t0 = time.time()
-        wf = prepare(pipeline, prompt, width, height, s, negative)
-        files = run(wf)
-        for f in files:
-            results.append(f)
-            if show:
-                display(Image.open(f))
-        print(f'  ảnh {i+1}/{n}: {len(files)} file, {time.time()-t0:.1f}s, seed={s}')
-    if LUU_VAO_DRIVE and os.path.isdir('/content/drive/MyDrive'):
+
+def tom_tat(cfg_hinh):
+    print('=' * 68)
+    for k, v in cfg_hinh.items():
+        print('  %-14s %s' % (k, v))
+    print('=' * 68)
+
+
+def generate(prompt=PROMPT, preset=PRESET, pipeline=PIPELINE, size=SIZE,
+             them=THEM_VAO_PROMPT, neg_mode=NEG_MODE, negative_tu_viet=NEGATIVE_PROMPT,
+             cfg=CFG, tu_dong_cfg=TU_DONG_BAT_CFG, steps=STEPS, bc_sua=BC_SUA_CHI_TIET,
+             sampler=SAMPLER, scheduler=SCHEDULER, seed=SEED, n=SO_ANH,
+             ten_file=TEN_FILE, nhieu=NHIEU_PROMPT, show=True, luu_drive=LUU_VAO_DRIVE):
+    """Tạo ảnh. Mọi ô ở trên đều có thể truyền đè khi gọi bằng code."""
+    prompt, pipeline, preset_size, doc = apply_preset(preset, prompt, pipeline, them)
+    w, h = chon_size(size, preset_size)
+    negative = gop_negative(neg_mode, negative_tu_viet, doc)
+    cfg, steps, note = xu_ly_cfg(negative, cfg, steps, tu_dong_cfg)
+    kiem_tra(prompt, w, h, cfg, steps, negative)
+
+    ds = [d.strip() for d in str(nhieu or '').splitlines() if d.strip()]
+    ds_prompt = ds if ds else [prompt]
+
+    tom_tat({
+        'pipeline': pipeline,
+        'kich_thuoc': '%dx%d' % (w, h),
+        'cfg / steps': '%.1f / %d' % (cfg, steps),
+        'sampler': '%s + %s' % (sampler, scheduler),
+        'sua chi tiet': '%d bước' % int(bc_sua),
+        'negative': (negative[:68] + '...') if len(negative) > 68 else (negative or '(không)'),
+        'so anh': '%d prompt x %d' % (len(ds_prompt), int(n)),
+    })
+    if note:
+        print('ℹ️ %s' % note)
+    if int(n) > 2:
+        print('⚠️ %d ảnh liên tiếp trên T4 16GB — nếu báo OOM, hạ xuống 1-2.' % int(n))
+
+    if not _health():
+        raise RuntimeError('❌ ComfyUI chưa chạy — chạy Cell 5 trước')
+
+    ket_qua = []
+    for pi, p_txt in enumerate(ds_prompt):
+        for i in range(int(n)):
+            s = int(seed) + i if int(seed) >= 0 else random.randint(0, 2 ** 31 - 1)
+            t0 = time.time()
+            wf = prepare(pipeline, p_txt, w, h, s, negative, cfg, steps, bc_sua,
+                         sampler, scheduler, ten_file)
+            files = run(wf)
+            for f in files:
+                ket_qua.append(f)
+                if show:
+                    display(Image.open(f))
+            print('  [%d/%d] ảnh %d/%d: %d file, %.1fs, seed=%d'
+                  % (pi + 1, len(ds_prompt), i + 1, int(n), len(files), time.time() - t0, s))
+
+    try:
+        with open('/content/lan_chay_cuoi.json', 'w', encoding='utf-8') as f:
+            json.dump({'prompt': ds_prompt, 'negative': negative, 'cfg': cfg,
+                       'steps': steps, 'bc_sua_chi_tiet': int(bc_sua),
+                       'sampler': sampler, 'scheduler': scheduler, 'seed': seed,
+                       'size': [w, h], 'pipeline': pipeline, 'preset': preset,
+                       'anh': ket_qua}, f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+
+    if luu_drive and os.path.isdir('/content/drive/MyDrive'):
         import shutil
         dest = '/content/drive/MyDrive/FLUX_output'
         os.makedirs(dest, exist_ok=True)
-        for f in results:
+        for f in ket_qua:
             shutil.copy2(f, dest)
-        print(f'💾 Đã copy {len(results)} ảnh vào {dest}')
-    return results
+        print('💾 Đã copy %d ảnh vào %s' % (len(ket_qua), dest))
+    return ket_qua
+
+
+def nhanh(prompt, n=1, **kw):
+    """Một dòng lấy ảnh nhanh: pipeline fast, 1024x1024."""
+    return generate(prompt=prompt, preset=TUY_CHON, pipeline='flux_q5_fast',
+                    size='1024x1024 (vuông, ~1MP)', n=n, **kw)
+
+
+def dep(prompt, n=1, **kw):
+    """Một dòng lấy ảnh đẹp: quality, sửa cả mặt và tay."""
+    return generate(prompt=prompt, preset=TUY_CHON, pipeline='flux_q5_quality',
+                    size='832x1216 (dọc, ~1MP)', n=n, **kw)
+
 
 anh = generate()
-print(f'\\n💡 Prompt đang dùng: {PROMPT[:120]}...' if len(PROMPT) > 120 else f'\\n💡 Prompt đang dùng: {PROMPT}')
-print(f'\n✅ {len(anh)} ảnh trong {OUT}')
+print()
+print('📝 Prompt: ' + (PROMPT if len(PROMPT) <= 120 else PROMPT[:120] + '...'))
+print('✅ %d ảnh trong %s' % (len(anh), OUT))
+print('💡 Gọi lại nhanh: nhanh("prompt của bạn")  ·  dep("prompt của bạn", n=2)')
 ''')
 
 # =========================================================================== CELL 7
@@ -1118,6 +1315,19 @@ Giữ ~1 megapixel (832×1216 / 1216×832 / 1024²) — xa khỏi ~1MP thì schn
 
 Nguồn: `scripts/prompt_presets.py` → `workflows/prompts.json`.
 
+**Negative prompt có ở ô `NEG_MODE`** (9 chế độ: theo preset / chung / tay / mặt / chữ /
+thừa chi / tất cả / tự viết / không dùng). Nhưng nhớ quy tắc `comfy/samplers.py:610`:
+ở `cfg = 1.0` ComfyUI **bỏ hẳn nhánh negative**, viết vào cũng không được đọc.
+Vì vậy Cell 6 in rõ trạng thái trước mỗi lần chạy — `✅ Negative đang BẬT (cfg=2.0 > 1.0)`
+hoặc `⚠️ Có negative mà cfg=1.0 → negative KHÔNG được đọc` — và khi bạn bật negative nó
+tự nâng `cfg 1.0 → 2.0`, `steps 4 → 8` để negative thật sự có tác dụng.
+Muốn nhanh lại như cũ: `NEG_MODE = khong - không dùng negative`.
+
+Các ô khác của Cell 6: `THEM_VAO_PROMPT` (nối thêm vào preset), `CFG`, `TU_DONG_BAT_CFG`,
+`STEPS`, `BC_SUA_CHI_TIET` (bước riêng cho sửa mặt/tay), `SAMPLER`, `SCHEDULER`, `SEED`
+(`-1` = ngẫu nhiên), `SO_ANH`, `SIZE` (6 khung hình ~1MP), `TEN_FILE`, `NHIEU_PROMPT`
+(mỗi dòng một prompt), `LUU_VAO_DRIVE`. Gọi bằng code: `nhanh("...")` · `dep("...", n=2)`.
+
 ## 🧪 Tự kiểm tra (không cần GPU, không cần mạng)
 
 ```bash
@@ -1289,12 +1499,39 @@ def self_check(nb: dict, builder_src: str, presets_src: str) -> None:
     exec(compile(presets_src, "<notebook-cell4-presets>", "exec"), pns)
     disk = json.load(open(os.path.join(ROOT, "workflows", "prompts.json"), encoding="utf-8"))
     gen = pns["build"]()
-    if gen["presets"] != disk["presets"] or gen["negative"] != disk["negative"]:
+    if gen != disk:
+        khac = [k for k in set(gen) | set(disk) if gen.get(k) != disk.get(k)]
         raise AssertionError(
-            "❌ workflows/prompts.json KHÔNG KHỚP scripts/prompt_presets.py\n"
+            "❌ workflows/prompts.json KHÔNG KHỚP scripts/prompt_presets.py "
+            f"(lệch ở: {', '.join(sorted(khac))})\n"
             "  Sửa: python3 scripts/prompt_presets.py   (hoặc scripts/check_sync.py --fix)")
     print(f"✅ preset nhúng trong notebook giống hệt scripts/prompt_presets.py "
           f"({len(gen['presets'])} preset)")
+
+    # giao diện Cell 6 phải liệt kê ĐÚNG mọi preset / chế độ negative / khung hình
+    c6 = None
+    for cell in nb["cells"]:
+        s = "".join(cell["source"])
+        if "PRESET = " in s and "NEG_MODE = " in s:
+            c6 = s
+            break
+    assert c6 is not None, "không tìm thấy Cell 6 (thiếu ô PRESET / NEG_MODE)"
+    thieu = []
+    for p in pns["PRESETS"]:
+        if '"%s"' % p["id"] not in c6:
+            thieu.append("preset " + p["id"])
+    for _id, ten in pns["NEG_MODES"]:
+        if ten not in c6:
+            thieu.append("chế độ negative " + ten)
+    for nhan in pns["SIZES"]:
+        if nhan not in c6:
+            thieu.append("khung hình " + nhan)
+    if thieu:
+        raise AssertionError(
+            "❌ Giao diện Cell 6 không khớp scripts/prompt_presets.py: " + ", ".join(thieu)
+            + "\n  Sửa: python3 scripts/make_notebook.py")
+    print(f"✅ giao diện Cell 6 liệt kê đủ {len(pns['PRESETS'])} preset / "
+          f"{len(pns['NEG_MODES'])} chế độ negative / {len(pns['SIZES'])} khung hình")
 
     ns: dict = {}
     exec(compile(builder_src, "<notebook-cell4>", "exec"), ns)
@@ -1331,11 +1568,24 @@ def main() -> int:
 
     src = builder_source()
     psrc = presets_source()
+    pns = presets_ns()
+    # giao diện Cell 6 được SINH từ scripts/prompt_presets.py, không gõ tay,
+    # để thêm/bớt preset không bao giờ lệch với file JSON mà Cell 6 đọc.
+    thay = {
+        "__BUILDER__": src.rstrip(),
+        "__PRESETS__": psrc.rstrip(),
+        "__PRESET_IDS__": json.dumps(
+            [pns["TUY_CHON"]] + [p["id"] for p in pns["PRESETS"]], ensure_ascii=False),
+        "__NEG_MODES__": json.dumps(
+            [ten for _id, ten in pns["NEG_MODES"]], ensure_ascii=False),
+        "__SIZE_IDS__": json.dumps(
+            [pns["SIZE_THEO_PRESET"]] + list(pns["SIZES"]), ensure_ascii=False),
+        "__SIZES_DICT__": json.dumps(pns["SIZES"], ensure_ascii=False),
+    }
     for i, (kind, text) in enumerate(CELLS):
-        if "__BUILDER__" in text:
-            text = text.replace("__BUILDER__", src.rstrip())
-        if "__PRESETS__" in text:
-            text = text.replace("__PRESETS__", psrc.rstrip())
+        for khoa, gia_tri in thay.items():
+            if khoa in text:
+                text = text.replace(khoa, gia_tri)
         CELLS[i] = (kind, text)
     nb = build_notebook()
     self_check(nb, src, psrc)

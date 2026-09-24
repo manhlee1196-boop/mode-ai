@@ -41,7 +41,7 @@ Cell 7 = inpaint vẽ tay · Cell 8 = chẩn đoán · Cell 9 = tunnel dự phò
 | Tham số | Giá trị | Vì sao |
 |---|---|---|
 | steps | **4** | schnell là model chưng cất 4 bước; thêm bước chỉ tốn thời gian |
-| cfg | **1.0** | schnell không dùng CFG → ComfyUI bỏ luôn nhánh negative |
+| cfg | **1.0** (2.0 khi bật negative) | `cfg=1.0` → ComfyUI bỏ luôn nhánh negative (`samplers.py:610`); muốn negative có tác dụng phải `cfg ≥ 2.0` |
 | sampler | `euler` | — |
 | scheduler | `simple` | — |
 | size | 1024×1024 / 832×1216 / 1216×832 | giữ ~1 MP, bội số của 16 |
@@ -67,17 +67,29 @@ Cell 7 = inpaint vẽ tay · Cell 8 = chẩn đoán · Cell 9 = tunnel dự phò
 
 ### Inpaint (Cell 7)
 
-`denoise 0.5` · `steps 6` · `grow_mask 12px` · `cfg 1.0`
+`denoise 0.5` · `steps 6` · `grow_mask 12px` · `cfg` theo ô CFG của Cell 6
+(để negative có tác dụng cả ở bước sửa mặt/sửa tay)
 
 ---
 
 ## 💡 Prompt — cách viết để KHÔNG bị lỗi
 
-### Quy tắc 1: Negative prompt vô dụng trên pipeline này
+### Quy tắc 1: Negative prompt CHỈ ăn khi cfg > 1.0
 
 `comfy/samplers.py:610` — `if math.isclose(cond_scale, 1.0): uncond_ = None`.
-Với `cfg = 1.0`, ComfyUI **bỏ hẳn nhánh negative**. Viết "no extra fingers" vào cũng không
-được đọc. Mọi "chống lỗi" phải nằm trong prompt **dương**.
+Với `cfg = 1.0` (mặc định của schnell), ComfyUI **bỏ hẳn nhánh negative**: viết
+"no extra fingers" vào cũng không được đọc.
+
+→ Có hai đường, và nên dùng cả hai:
+
+| | Cách | Chi phí |
+|---|---|---|
+| **(a)** | Tránh lỗi ngay trong prompt **dương** (quy tắc 2) | miễn phí, hiệu quả nhất |
+| **(b)** | Bật negative trong Cell 6 → Cell tự nâng `cfg 1.0 → 2.0`, `steps 4 → 8` | chậm hơn rõ rệt |
+
+Cell 6 in rõ trạng thái trước khi chạy: `✅ Negative đang BẬT (cfg=2.0 > 1.0, 27 từ)` hoặc
+`⚠️ Có negative mà cfg=1.0 → negative KHÔNG được đọc.` — nhìn vào đó là biết negative có
+được tính hay không, không phải đoán.
 
 ### Quy tắc 2: Tránh lỗi tay bằng cách giấu/cấp việc cho tay
 
@@ -129,6 +141,45 @@ Mẹo nhanh:
 - **Tay vẫn lỗi**: chuyển sang `flux_q5_quality`, tăng denoise tay `0.28 → 0.35`,
   hoặc dùng Cell 7 tô lên bàn tay rồi inpaint.
 - **Mặt vẫn lỗi**: đừng dùng `flux_q5_fast` (không có FaceDetailer); dùng `standard`/`quality`.
+
+### Giao diện Cell 6 — từng ô là gì
+
+| Ô | Chức năng |
+|---|---|
+| `PRESET` | 9 cảnh dựng sẵn. Chọn preset → prompt, pipeline, khung hình **và negative** đều theo preset. Chọn `(tự viết prompt ở dưới)` để tự gõ |
+| `PIPELINE` | 5 pipeline (bị preset ghi đè nếu bạn chọn preset) |
+| `PROMPT` | Prompt dương |
+| `THEM_VAO_PROMPT` | Nối thêm vào cuối prompt (kể cả khi dùng preset) — tiện đổi một chi tiết mà không sửa preset |
+| `NEG_MODE` | 9 chế độ negative, xem bảng dưới |
+| `NEGATIVE_PROMPT` | Negative tự gõ (dùng ở chế độ `tu_viet`, hoặc nối thêm ở mọi chế độ khác) |
+| `CFG` | 1.0 = nhanh, negative **không** được đọc · ≥ 2.0 = negative bắt đầu có tác dụng |
+| `TU_DONG_BAT_CFG` | Có negative mà `cfg = 1.0` → tự nâng `cfg = 2.0`, `steps = 8` và in ra lý do |
+| `STEPS` / `BC_SUA_CHI_TIET` | Số bước của KSampler chính / của bước sửa mặt-tay (FaceDetailer) |
+| `SAMPLER` / `SCHEDULER` | Đổi thuật toán lấy mẫu |
+| `SEED` | `-1` = ngẫu nhiên mỗi ảnh; số ≥ 0 = cố định (để so sánh) |
+| `SO_ANH` | Số ảnh mỗi prompt (> 2 trên T4 16GB sẽ bị cảnh báo OOM) |
+| `SIZE` | 6 khung hình ~1MP, hoặc `theo preset` |
+| `TEN_FILE` | Tiền tố tên file đầu ra |
+| `NHIEU_PROMPT` | Mỗi dòng một prompt → chạy lần lượt, bỏ qua ô `PROMPT` |
+| `LUU_VAO_DRIVE` | Copy ảnh vào `MyDrive/FLUX_output` |
+
+**9 chế độ negative** (đều đọc từ `workflows/prompts.json`, nguồn `scripts/prompt_presets.py`):
+
+| Chế độ | Dùng khi |
+|---|---|
+| `theo preset` | Mặc định — negative gắn sẵn, khớp từng cảnh |
+| `chung` | Chống lỗi tổng quát (mờ, méo, watermark, thừa chi…) |
+| `tay` | Đang ra ảnh lỗi ngón tay |
+| `mat` | Đang ra ảnh lỗi mắt/mặt |
+| `chu` | Ảnh hay dính chữ/ký tự rác (phổ biến ở ảnh sản phẩm) |
+| `co_the` | Thừa tay chân, dính chi |
+| `tat_ca` | Ghép mọi khối (dài nhất, encode T5 lâu nhất) |
+| `tu_viet` | Chỉ dùng chuỗi ở ô `NEGATIVE_PROMPT` |
+| `khong` | Tắt negative — về `cfg = 1.0`, 4 bước, nhanh nhất |
+
+Gọi bằng code cũng được: `nhanh("prompt")` · `dep("prompt", n=2)` ·
+`generate(prompt="...", neg_mode="tay - lỗi bàn tay", cfg=3.0, steps=12)`.
+Cấu hình của lượt chạy cuối được ghi ở `/content/lan_chay_cuoi.json`.
 
 ---
 

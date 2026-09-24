@@ -22,7 +22,7 @@
  "5": {
   "class_type": "CLIPTextEncode",
   "inputs": {
-   "text": "detailed human hand, five fingers, natural fingernails, realistic skin texture, photorealistic, sharp focus",
+   "text": "a natural human hand resting flat on a surface, realistic skin texture, even fingernails, photorealistic, sharp focus",
    "clip": [
     "2",
     0

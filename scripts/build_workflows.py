@@ -32,12 +32,16 @@ FACE_DENOISE = 0.22
 HAND_DENOISE = 0.28
 HIRES_DENOISE = 0.35
 
+# KHÔNG viết "five fingers" / "perfect hands": càng nhấn số ngón, model chưng cất càng
+# hay sinh thêm ngón. Tả tay đang ở đâu/đang cầm gì (hoặc cho tay ra khỏi khung).
 POS_DEFAULT = (
     "photorealistic portrait of a young Vietnamese woman, natural skin texture with visible pores, "
-    "soft window light, 85mm lens, shallow depth of field, detailed eyes and hands, five fingers, "
-    "casual linen shirt, warm neutral background, film grain, high detail"
+    "soft window light, 85mm lens, shallow depth of field, detailed eyes, hands resting out of "
+    "frame, casual linen shirt, warm neutral background, film grain, high detail"
 )
-NEG_DEFAULT = ""   # schnell + cfg 1.0 → negative bị bỏ qua, để trống cho T5 encode nhanh
+# schnell + cfg 1.0 → samplers.py:610 bỏ hẳn nhánh negative, nên mặc định để trống
+# (đỡ một lần encode T5). Cell 6 tự điền + tự nâng cfg khi người dùng chọn dùng negative.
+NEG_DEFAULT = ""
 
 
 # ----------------------------------------------------------------- khối node dùng chung
@@ -170,8 +174,8 @@ def build_hires(width: int = 832, height: int = 1216,
 
 
 def build_inpaint(image: str = "input_image.png", mask: str = "mask.png",
-                  pos: str = ("detailed human hand, five fingers, natural fingernails, "
-                              "realistic skin texture, photorealistic, sharp focus"),
+                  pos: str = ("a natural human hand resting flat on a surface, realistic skin "
+                              "texture, even fingernails, photorealistic, sharp focus"),
                   neg: str = NEG_DEFAULT, denoise: float = 0.5,
                   steps: int = 6, grow_mask_by: int = 12) -> Dict[str, Any]:
     """Sửa vùng tô (tay/mặt/chân) trên ảnh có sẵn."""

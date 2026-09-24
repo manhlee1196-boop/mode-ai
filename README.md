@@ -27,8 +27,13 @@ Chi tiết tham số, prompt và xử lý lỗi: [`QUY_TRINH_FLUX.md`](QUY_TRINH
 
 **9 prompt preset có sẵn** (`workflows/prompts.json`, nguồn `scripts/prompt_presets.py`) —
 chọn trong ô PRESET ở Cell 6. Chúng được viết để tránh lỗi giải phẫu: tả rõ tay đang cầm/giấu/
-đan thay vì đòi "five fingers", vì với `cfg=1.0` ComfyUI bỏ hẳn nhánh negative
-(`comfy/samplers.py:610`) nên negative prompt không thể sửa được gì.
+đan thay vì đòi "five fingers" (càng nhấn số ngón, model chưng cất càng hay sinh thêm ngón).
+
+**Negative prompt có trong Cell 6**, nhưng kèm một sự thật cần nhớ: `comfy/samplers.py:610`
+bỏ hẳn nhánh negative ở `cfg = 1.0`, nên Cell 6 tự nâng `cfg → 2.0`, `steps → 8` mỗi khi bạn
+bật negative — và in rõ `✅ Negative đang BẬT` / `⚠️ negative KHÔNG được đọc` để bạn không phải
+đoán. Muốn nhanh nhất: `NEG_MODE = khong - không dùng negative`. Chi tiết:
+[`QUY_TRINH_FLUX.md`](QUY_TRINH_FLUX.md#-prompt--cách-viết-để-không-bị-lỗi).
 
 Model ~12 GB: UNET `flux1-schnell-Q5_K_S.gguf` (8.26) + T5-XXL `Q4_K_M` (2.9) +
 CLIP-L (0.25) + VAE `ae.safetensors` (0.34) + YOLO mặt/tay + SAM.
