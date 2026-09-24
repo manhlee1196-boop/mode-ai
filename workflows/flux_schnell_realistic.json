@@ -1,0 +1,159 @@
+{
+  "1": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "flux1-schnell-Q5_K_S.gguf"
+    },
+    "_meta": {
+      "title": "Unet Loader GGUF - Schnell Q5_K_S"
+    }
+  },
+  "2": {
+    "class_type": "DualCLIPLoaderGGUF",
+    "inputs": {
+      "clip_name1": "t5-v1_1-xxl-encoder-Q4_K_M.gguf",
+      "clip_name2": "clip_l.safetensors",
+      "type": "flux"
+    },
+    "_meta": {
+      "title": "DualCLIP GGUF"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    },
+    "_meta": {
+      "title": "VAE Loader"
+    }
+  },
+  "4": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 832,
+      "height": 1216,
+      "batch_size": 1
+    },
+    "_meta": {
+      "title": "Empty Latent 832x1216 - Portrait realistic"
+    }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "photorealistic, ultra realistic, 8k, masterpiece, best quality, 1girl, 20 years old, beautiful Vietnamese woman, natural skin texture, pores visible, long black hair, brown eyes, wearing white ao dai, standing in Hanoi old quarter, morning sunlight, bokeh background, detailed face, detailed skin, natural makeup, candid photo, shot on Sony A7R IV, 85mm f/1.4",
+      "clip": ["2", 0]
+    },
+    "_meta": {
+      "title": "Positive Prompt - Realistic Vietnamese"
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "anime, cartoon, illustration, painting, blurry, low quality, deformed, extra fingers, bad anatomy, oversaturated, artificial skin",
+      "clip": ["2", 0]
+    },
+    "_meta": {
+      "title": "Negative Prompt - Realistic"
+    }
+  },
+  "7": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 12345,
+      "steps": 4,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0,
+      "model": ["1", 0],
+      "positive": ["5", 0],
+      "negative": ["6", 0],
+      "latent_image": ["4", 0]
+    },
+    "_meta": {
+      "title": "KSampler 4 steps"
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["7", 0],
+      "vae": ["3", 0]
+    },
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "10": {
+    "class_type": "UltralyticsDetectorProvider",
+    "inputs": {
+      "model_name": "face_yolov8m.pt"
+    },
+    "_meta": {
+      "title": "YOLO Face"
+    }
+  },
+  "13": {
+    "class_type": "SAMLoader",
+    "inputs": {
+      "model_name": "sam_vit_b_01ec64.pth",
+      "device_mode": "AUTO"
+    },
+    "_meta": {
+      "title": "SAM Loader"
+    }
+  },
+  "20": {
+    "class_type": "FaceDetailer",
+    "inputs": {
+      "image": ["8", 0],
+      "model": ["1", 0],
+      "clip": ["2", 0],
+      "vae": ["3", 0],
+      "guide_size": 512,
+      "guide_size_for": true,
+      "max_size": 1216,
+      "seed": 200,
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "positive": ["5", 0],
+      "negative": ["6", 0],
+      "denoise": 0.22,
+      "feather": 5,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.5,
+      "bbox_dilation": 10,
+      "bbox_crop_factor": 3.0,
+      "sam_detection_hint": "center-1",
+      "sam_dilation": 0,
+      "sam_threshold": 0.93,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 10,
+      "bbox_detector": ["10", 0],
+      "sam_model_opt": ["13", 0],
+      "tiled_encode": true,
+      "tiled_decode": true
+    },
+    "_meta": {
+      "title": "FaceDetailer Realistic - denoise 0.22 higher for photorealistic"
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "FLUX_Q5_realistic",
+      "images": ["20", 0]
+    },
+    "_meta": {
+      "title": "Save Realistic Image"
+    }
+  }
+}

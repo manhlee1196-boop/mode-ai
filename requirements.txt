@@ -1,0 +1,8 @@
+# Core
+requests>=2.28.0
+# Optional for Gradio UI
+gradio>=4.0.0
+# Optional for ComfyUI API websocket
+websocket-client>=1.6.0
+# Image processing (for future extensions)
+Pillow>=9.0.0

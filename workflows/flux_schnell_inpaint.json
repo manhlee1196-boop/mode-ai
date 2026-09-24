@@ -1,0 +1,129 @@
+{
+  "1": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "flux1-schnell-Q5_K_S.gguf"
+    },
+    "_meta": {
+      "title": "Unet Loader GGUF"
+    }
+  },
+  "2": {
+    "class_type": "DualCLIPLoaderGGUF",
+    "inputs": {
+      "clip_name1": "t5-v1_1-xxl-encoder-Q4_K_M.gguf",
+      "clip_name2": "clip_l.safetensors",
+      "type": "flux"
+    },
+    "_meta": {
+      "title": "DualCLIP GGUF"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    },
+    "_meta": {
+      "title": "VAE Loader"
+    }
+  },
+  "4": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "input_image.png"
+    },
+    "_meta": {
+      "title": "Load Image - Input to inpaint"
+    }
+  },
+  "5": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "mask.png"
+    },
+    "_meta": {
+      "title": "Load Mask - White area to inpaint"
+    }
+  },
+  "6": {
+    "class_type": "ImageToMask",
+    "inputs": {
+      "image": ["5", 0],
+      "channel": "red"
+    },
+    "_meta": {
+      "title": "Image to Mask"
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "five fingers, natural hand, detailed skin, photorealistic, high quality, fix hand anatomy",
+      "clip": ["2", 0]
+    },
+    "_meta": {
+      "title": "Positive Prompt - Inpaint fix"
+    }
+  },
+  "8": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "deformed, blurry, extra fingers, mutated",
+      "clip": ["2", 0]
+    },
+    "_meta": {
+      "title": "Negative Prompt"
+    }
+  },
+  "9": {
+    "class_type": "VAEEncodeForInpaint",
+    "inputs": {
+      "pixels": ["4", 0],
+      "vae": ["3", 0],
+      "mask": ["6", 0],
+      "grow_mask_by": 12
+    },
+    "_meta": {
+      "title": "VAE Encode For Inpaint - grow 12px"
+    }
+  },
+  "10": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 42,
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 0.5,
+      "model": ["1", 0],
+      "positive": ["7", 0],
+      "negative": ["8", 0],
+      "latent_image": ["9", 0]
+    },
+    "_meta": {
+      "title": "KSampler Inpaint - steps 8 denoise 0.5"
+    }
+  },
+  "11": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["10", 0],
+      "vae": ["3", 0]
+    },
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "12": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "FLUX_Q5_inpaint_fixed",
+      "images": ["11", 0]
+    },
+    "_meta": {
+      "title": "Save Inpainted Image"
+    }
+  }
+}

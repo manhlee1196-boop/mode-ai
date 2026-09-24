@@ -1,0 +1,204 @@
+name: 🎨 Image Generation Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'Prompt tạo ảnh'
+        required: true
+        default: '1girl, long silver hair, aqua eyes, school uniform, cherry blossoms'
+        type: string
+      style:
+        description: 'Style preset'
+        required: false
+        default: 'aesthetic_anime'
+        type: choice
+        options:
+          - aesthetic_anime
+          - photorealistic
+          - realistic_vietnamese
+          - cinematic
+          - portrait
+          - full_body
+      workflow_type:
+        description: 'Loại workflow'
+        required: false
+        default: 'optimized'
+        type: choice
+        options:
+          - simple
+          - optimized
+          - realistic
+          - hires
+      width:
+        description: 'Width'
+        required: false
+        default: '1024'
+        type: choice
+        options:
+          - '832'
+          - '1024'
+          - '1216'
+      height:
+        description: 'Height'
+        required: false
+        default: '1024'
+        type: choice
+        options:
+          - '832'
+          - '1024'
+          - '1216'
+      seed:
+        description: 'Seed (0 = random)'
+        required: false
+        default: '42'
+        type: string
+      model_preset:
+        description: 'Model preset'
+        required: false
+        default: 'q5_optimal'
+        type: choice
+        options:
+          - q5_optimal
+          - q4_balanced
+          - q6_high
+          - q8_max
+
+  push:
+    branches:
+      - main
+    paths:
+      - 'workflows/*.json'
+      - 'src/**/*.py'
+      - 'scripts/*.py'
+
+jobs:
+  validate:
+    name: 🔍 Validate Workflows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests
+
+      - name: Validate workflows
+        run: |
+          python scripts/validate.py
+
+  build-workflow:
+    name: 🛠️ Build Workflow JSON
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests
+
+      - name: Generate workflow
+        run: |
+          python scripts/generate.py \
+            --prompt "${{ inputs.prompt }}" \
+            --style "${{ inputs.style }}" \
+            --workflow "${{ inputs.workflow_type }}" \
+            --width "${{ inputs.width }}" \
+            --height "${{ inputs.height }}" \
+            --seed "${{ inputs.seed }}" \
+            --model "${{ inputs.model_preset }}" \
+            --output "workflows/generated_${{ github.run_id }}.json" \
+            --no-queue
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-workflow-${{ github.run_id }}
+          path: workflows/generated_${{ github.run_id }}.json
+          retention-days: 7
+
+      - name: Show workflow stats
+        run: |
+          echo "📊 Generated workflow:"
+          cat workflows/generated_${{ github.run_id }}.json | python -m json.tool | head -n 100
+
+  # Optional: Generate image if self-hosted runner with GPU or ComfyUI server
+  # Uncomment if you have a self-hosted runner with ComfyUI
+  # generate-image:
+  #   name: 🖼️ Generate Image (self-hosted)
+  #   runs-on: self-hosted
+  #   if: github.event_name == 'workflow_dispatch'
+  #   needs: build-workflow
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #
+  #     - name: Setup Python
+  #       uses: actions/setup-python@v5
+  #       with:
+  #         python-version: '3.10'
+  #
+  #     - name: Download workflow
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: generated-workflow-${{ github.run_id }}
+  #         path: workflows/
+  #
+  #     - name: Generate image via ComfyUI API
+  #       run: |
+  #         python scripts/generate.py \
+  #           --prompt "${{ inputs.prompt }}" \
+  #           --style "${{ inputs.style }}" \
+  #           --workflow "${{ inputs.workflow_type }}" \
+  #           --width "${{ inputs.width }}" \
+  #           --height "${{ inputs.height }}" \
+  #           --seed "${{ inputs.seed }}" \
+  #           --server "127.0.0.1:8188"
+  #
+  #     - name: Upload images
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: generated-images-${{ github.run_id }}
+  #         path: output/*.png
+
+  # Auto-validate on push
+  auto-build:
+    name: 🤖 Auto Build Test Workflows
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install
+        run: pip install requests
+
+      - name: Test generate all workflow types
+        run: |
+          for wf in simple optimized realistic; do
+            echo "Testing workflow: $wf"
+            python scripts/generate.py --preset girl_cherry --workflow $wf --output workflows/test_${wf}.json --no-queue
+          done
+          ls -lh workflows/test_*.json
+          rm workflows/test_*.json
