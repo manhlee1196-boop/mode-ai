@@ -1225,8 +1225,8 @@ demo.queue().launch(share=True, server_name='0.0.0.0', server_port=7860)
 
 # =========================================================================== CELL 8
 code(r'''
-# @title 🔎 CELL 8 — Chẩn đoán: node có đủ không, model có đủ không
-import os, json, requests
+# @title 🔎 CELL 8 — Chẩn đoán: node có đủ không, model có đủ không, tài nguyên
+import os, json, shutil, requests
 
 COMFY = 'http://127.0.0.1:8188'
 P = json.load(open('/content/mode_ai_paths.json'))
@@ -1279,6 +1279,50 @@ if thieu:
     print('   Sau đó chạy lại Cell 2 rồi khởi động lại ComfyUI (Cell 5).')
 else:
     print('\n✅ Đủ node cho cả 5 workflow')
+print('\n── Tài nguyên ──')
+vram_total = 0.0
+try:
+    st = requests.get(f'{COMFY}/system_stats', timeout=20).json()
+    si = st.get('system', {}) or {}
+    dev = (st.get('devices') or [{}])[0]
+    gb = 1024.0 ** 3
+    vram_total = float(dev.get('vram_total', 0) or 0) / gb
+    vram_free = float(dev.get('vram_free', 0) or 0) / gb
+    ram_total = float(si.get('ram_total', 0) or 0) / gb
+    ram_free = float(si.get('ram_free', 0) or 0) / gb
+    print(f'  GPU      : {dev.get("name", "?")}')
+    print(f'  VRAM     : {vram_free:.1f} GB trống / {vram_total:.1f} GB')
+    print(f'  RAM      : {ram_free:.1f} GB trống / {ram_total:.1f} GB')
+    print(f'  ComfyUI  : {si.get("comfyui_version", "?")} · torch {si.get("pytorch_version", "?")}')
+except Exception as e:
+    print(f'  (không đọc được /system_stats: {e})')
+try:
+    du = shutil.disk_usage('/content')
+    print(f'  Ổ đĩa    : {du.free / 1024**3:.1f} GB trống / {du.total / 1024**3:.1f} GB')
+except Exception as e:
+    print(f'  (không đọc được ổ đĩa: {e})')
+
+print('\n── Cấu hình khuyên dùng cho máy này ──')
+if vram_total >= 20:
+    kh = ('1024x1024 (vuông, ~1MP)', 'flux_q5_quality', 'Mặc định', 2,
+          'VRAM rộng: chạy quality/hires, 2 ảnh/lượt')
+elif vram_total >= 12:
+    kh = ('832x1216 (dọc, ~1MP)', 'flux_q5_quality', 'Mặc định', 2,
+          'T4 16GB / L4: quality thoải mái')
+elif vram_total >= 8:
+    kh = ('832x1216 (dọc, ~1MP)', 'flux_q5_standard', 'Mặc định', 1,
+          'VRAM vừa: standard, 1 ảnh/lượt')
+elif vram_total > 0:
+    kh = ('768x1024 (dọc nhỏ, nhanh)', 'flux_q5_fast', 'fp16-vae', 1,
+          'VRAM gò bó (<8GB): đành dùng fp16-vae → ẢNH SẼ MỜ HƠN, xem mục "Ảnh bị mờ"')
+else:
+    kh = ('(không đo được VRAM)', 'flux_q5_standard', 'Mặc định', 1, 'Đặt tay theo kinh nghiệm')
+print(f'  Khung hình : {kh[0]}')
+print(f'  Pipeline   : {kh[1]}')
+print(f'  VAE_PREC   : {kh[2]}   (Cell 5 — đổi xong phải chạy lại Cell 5)')
+print(f'  Ảnh/lượt   : {kh[3]}')
+print(f'  Ghi chú    : {kh[4]}')
+
 print('\nLog ComfyUI (30 dòng cuối):')
 os.system('tail -30 /content/comfyui.log')
 ''')
@@ -1436,6 +1480,207 @@ else:
     do_thu_muc()
 ''')
 
+# =========================================================================== CELL 8c
+code(r'''
+# @title 🧭 CELL 8c — Quy trình toàn diện: tạo → đo → sửa → chốt
+CHAY_QT = True  # @param {type:"boolean"}
+PRESET_QT = "chan_dung_can"  # @param __PRESET_IDS__
+PROMPT_QT = ""  # @param {type:"string"}
+SIZE_QT = "theo preset (khuyên dùng)"  # @param __SIZE_IDS__
+MUC_QT = "chuan"  # @param ["nhanh", "chuan", "ky"]
+SO_UNG_VIEN = 3  # @param {type:"slider", min:1, max:4, step:1}
+SEED_QT = 12345  # @param {type:"integer"}
+DUNG_NEGATIVE = False  # @param {type:"boolean"}
+NGUONG_NET = 3.0  # @param {type:"slider", min:1.5, max:6, step:0.5}
+TU_SUA = True  # @param {type:"boolean"}
+
+# ⚠️ Điểm số ở đây KHÔNG đo được giải phẫu (thừa ngón, méo mặt). Nó chỉ đo những gì
+# đo được bằng thống kê ảnh: nét, cháy sáng, quá tối, độ tương phản. Giải phẫu vẫn
+# phải nhờ preset/prompt (Cell 6) hoặc sửa tay bằng Cell 7.
+import os, json, time
+import numpy as np
+from PIL import Image, ImageFilter
+from IPython.display import display
+
+MUC = {
+    'nhanh': dict(ung_vien=2, nang=False, lan_sua=0),
+    'chuan': dict(ung_vien=3, nang=False, lan_sua=1),
+    'ky':    dict(ung_vien=4, nang=True,  lan_sua=2),
+}
+NAP = {'flux_q5_fast': 'flux_q5_standard',
+       'flux_q5_standard': 'flux_q5_quality',
+       'flux_q5_quality': 'flux_q5_hires',
+       'flux_q5_hires': 'flux_q5_hires'}
+
+
+def _lap_var(im):
+    a = np.asarray(im.convert('L'), dtype=np.float32)
+    lap = (a[1:-1, 1:-1] * 4.0 - a[:-2, 1:-1] - a[2:, 1:-1] - a[1:-1, :-2] - a[1:-1, 2:])
+    return float(lap.var())
+
+
+def danh_gia(anh, nguong_net=3.0):
+    """Chấm điểm MỘT ảnh. Trả về dict (dat, diem, loi, các số đo).
+
+    Tiêu chí — cố gắng chỉ dùng thứ đo được, không phụ thuộc nội dung ảnh:
+      mờ        : độ nét < nguong_net × mốc "chính ảnh này bị mờ radius=2"
+                  (mốc tự hiệu chuẩn → không cần ngưỡng tuyệt đối)
+      cháy sáng : > 2% pixel >= 250
+      quá tối   : > 2% pixel <= 5
+      loãng     : độ lệch chuẩn mức xám < 15 (cảnh thật sự mờ sương thì có thể bị
+                  đánh nhầm — xem như gợi ý, không phải kết luận)
+    """
+    im = Image.open(anh) if isinstance(anh, str) else anh
+    xam = np.asarray(im.convert('L'), dtype=np.float32)
+    net = _lap_var(im)
+    moc = _lap_var(im.filter(ImageFilter.GaussianBlur(2)))
+    ty_le = (net / moc) if moc > 1e-6 else 0.0
+    chay = float((xam >= 250).mean() * 100.0)
+    toi = float((xam <= 5).mean() * 100.0)
+    tphan = float(xam.std())
+    loi = []
+    if ty_le < nguong_net:
+        loi.append('mờ')
+    if chay > 2.0:
+        loi.append('cháy sáng')
+    if toi > 2.0:
+        loi.append('quá tối')
+    if tphan < 15.0:
+        loi.append('loãng')
+    diem = (100 - 30 * ('mờ' in loi) - 25 * ('cháy sáng' in loi)
+            - 15 * ('quá tối' in loi) - 15 * ('loãng' in loi))
+    return dict(anh=(anh if isinstance(anh, str) else '(ảnh trong bộ nhớ)'),
+                dat=(not loi), diem=max(0, diem), loi=loi, net=net, moc_mo=moc,
+                ty_le_net=ty_le, chay_sang=chay, qua_toi=toi, tuong_phan=tphan)
+
+
+def _in_bang(ds):
+    print('%-30s %9s %7s %6s %6s %7s  %s'
+          % ('ảnh', 'lap_var', 'gấp mốc', 'cháy%', 'tối%', 't.phản', 'kết luận'))
+    print('-' * 88)
+    for r in ds:
+        print('%-30s %9.1f %7.1f %6.1f %6.1f %7.1f  %s'
+              % (os.path.basename(r['anh'])[:30], r['net'], r['ty_le_net'],
+                 r['chay_sang'], r['qua_toi'], r['tuong_phan'],
+                 ('✅ đạt' if r['dat'] else '❌ ' + ', '.join(r['loi']))))
+
+
+def tao_anh_tot(prompt=None, preset=PRESET_QT, pipeline=None, size=SIZE_QT,
+                muc=MUC_QT, so_ung_vien=None, seed=SEED_QT, nguong_net=NGUONG_NET,
+                dung_negative=DUNG_NEGATIVE, tu_sua=TU_SUA, hien=True):
+    """Quy trình khép kín:
+
+    TẠO n ứng viên (khác seed) → ĐO từng cái → nếu chưa đạt thì SỬA
+    (làm nét, rồi nâng pipeline) → CHỐT ảnh tốt nhất + báo cáo.
+    """
+    if 'generate' not in globals():
+        print('❌ Chưa có hàm generate() — chạy Cell 6 trước')
+        return None
+    if (prompt or '').strip():                      # có prompt riêng → không dùng preset
+        preset = globals().get('TUY_CHON', '(tự viết prompt ở dưới)')
+    cau_hinh = MUC.get(muc, MUC['chuan'])
+    n = int(so_ung_vien or cau_hinh['ung_vien'])
+    if cau_hinh['nang'] and pipeline is None:
+        pipeline = 'flux_q5_quality'
+    neg = 'theo preset' if dung_negative else 'khong - không dùng negative'
+
+    def hien_tai():
+        if pipeline:
+            return pipeline
+        p = globals().get('PRESETS', {}).get(preset)
+        return p['pipeline'] if p else 'flux_q5_standard'
+
+    def mot_luot(vong, i, sd, pl, sac, ghi_chu):
+        try:
+            files = generate(prompt=prompt, preset=preset, pipeline=pl, size=size,
+                             seed=int(sd), n=1, show=False, neg_mode=neg,
+                             sac_net=sac, ten_file='flux/qt%d_%d' % (vong, i))
+        except Exception as e:
+            print('  ⚠️ %s → lỗi: %s' % (ghi_chu, str(e)[:100]))
+            return None
+        if not files:
+            return None
+        d = danh_gia(files[-1], nguong_net)
+        d.update(cau_hinh=ghi_chu, seed=int(sd), pipeline=pl or '(theo preset)',
+                 sac_net=sac)
+        return d
+
+    print('🚀 Quy trình: %s (%d ứng viên, tối đa %d lần sửa)'
+          % (muc, n, cau_hinh['lan_sua']))
+    ds = []
+    for i in range(n):
+        d = mot_luot(1, i, int(seed) + i, pipeline, 0.0, 'vòng 1 · seed %d' % (int(seed) + i))
+        if d:
+            ds.append(d)
+            print('   %s → %s' % (d['cau_hinh'], 'đạt' if d['dat'] else ', '.join(d['loi'])))
+
+    dat = [d for d in ds if d['dat']]
+    if not dat and tu_sua and cau_hinh['lan_sua'] >= 1 and ds:
+        print('\n🔧 Chưa ảnh nào đạt → sửa lần 1: làm nét 0.35 trên seed tốt nhất')
+        tot = max(ds, key=lambda r: r['diem'])
+        d = mot_luot(2, 0, tot['seed'], pipeline, 0.35, 'vòng 2 · làm nét 0.35')
+        if d:
+            ds.append(d)
+            print('   %s → %s' % (d['cau_hinh'], 'đạt' if d['dat'] else ', '.join(d['loi'])))
+        dat = [d for d in ds if d['dat']]
+    if not dat and tu_sua and cau_hinh['lan_sua'] >= 2 and ds:
+        print('\n🔧 Vẫn chưa → sửa lần 2: nâng pipeline (thêm bước sửa mặt/tay)')
+        pl2 = NAP.get(hien_tai(), 'flux_q5_quality')
+        tot = max(ds, key=lambda r: r['diem'])
+        d = mot_luot(3, 0, tot['seed'], pl2, 0.35, 'vòng 3 · %s + làm nét' % pl2)
+        if d:
+            ds.append(d)
+            print('   %s → %s' % (d['cau_hinh'], 'đạt' if d['dat'] else ', '.join(d['loi'])))
+        dat = [d for d in ds if d['dat']]
+
+    print('\n' + '=' * 88)
+    _in_bang(sorted(ds, key=lambda r: (-r['diem'], -r['net'])))
+    if not ds:
+        print('\n❌ Không tạo được ảnh nào — xem /content/comfyui.log')
+        return None
+    chon = max(dat, key=lambda r: r['diem']) if dat else max(ds, key=lambda r: r['diem'])
+
+    print('\n' + ('✅ ĐẠT CHẤT LƯỢNG' if chon['dat']
+                  else '⚠️ CHƯA ĐẠT — đây là ảnh tốt nhất trong những cái đã thử'))
+    print('   Ảnh      : %s' % chon['anh'])
+    print('   Cấu hình : %s · %s' % (chon['cau_hinh'], chon['pipeline']))
+    print('   Điểm     : %d/100 · độ nét gấp %.1f lần mốc mờ (ngưỡng %.1f)'
+          % (chon['diem'], chon['ty_le_net'], nguong_net))
+
+    if not chon['dat']:
+        print('   Còn lỗi  : %s' % ', '.join(chon['loi']))
+        print('\n   Việc tiếp theo:')
+        if 'mờ' in chon['loi']:
+            print('   • Mờ → chạy CELL 8b để khoanh vùng nguyên nhân (VAE fp16 / cfg /')
+            print('     lượng tử). Đừng chỉ tăng SAC_NET — làm nét là vá triệu chứng.')
+        if 'cháy sáng' in chon['loi'] or 'quá tối' in chon['loi']:
+            print('   • Sáng/tối → sửa prompt ánh sáng (soft window light, evenly lit),')
+            print('     hoặc hạ CFG nếu đang để > 1.')
+        if 'loãng' in chon['loi']:
+            print('   • Loãng → thêm nguồn sáng có hướng (side lighting, rim light).')
+        print('   • Lỗi giải phẫu (tay/mặt): điểm số KHÔNG đo được. Đổi preset/prompt')
+        print('     ở Cell 6, hoặc dùng Cell 7 tô vùng cần sửa rồi inpaint.')
+
+    if hien:
+        try:
+            display(Image.open(chon['anh']))
+        except Exception:
+            pass
+    try:
+        with open('/content/bao_cao_chat_luong.json', 'w', encoding='utf-8') as f:
+            json.dump({'thoi_gian': time.strftime('%Y-%m-%d %H:%M:%S'), 'muc': muc,
+                       'nguong_net': nguong_net, 'negative': neg, 'chon': chon,
+                       'tat_ca': ds}, f, ensure_ascii=False, indent=1)
+        print('\n📄 Báo cáo chi tiết: /content/bao_cao_chat_luong.json')
+    except Exception as e:
+        print('\n⚠️ Không ghi được báo cáo (%s) — ảnh vẫn đã tạo, chỉ thiếu file báo cáo' % e)
+    return chon
+
+
+if CHAY_QT:
+    anh_chon = tao_anh_tot()
+''')
+
 # =========================================================================== CELL 9
 code(r'''
 # @title 🌐 CELL 9 — Tunnel dự phòng (localtunnel) nếu cloudflared không chạy
@@ -1521,6 +1766,22 @@ Các ô khác của Cell 6: `THEM_VAO_PROMPT` (nối thêm vào preset), `CFG`, 
 `STEPS`, `BC_SUA_CHI_TIET` (bước riêng cho sửa mặt/tay), `SAMPLER`, `SCHEDULER`, `SEED`
 (`-1` = ngẫu nhiên), `SO_ANH`, `SIZE` (6 khung hình ~1MP), `TEN_FILE`, `NHIEU_PROMPT`
 (mỗi dòng một prompt), `LUU_VAO_DRIVE`. Gọi bằng code: `nhanh("...")` · `dep("...", n=2)`.
+
+## 🔁 Quy trình toàn diện — Cell 8c
+
+Cell 6 là "tạo một ảnh". Cell 8c là "chốt một ảnh TỐT": tạo nhiều ứng viên (khác seed)
+→ chấm điểm từng cái (mờ / cháy sáng / quá tối / loãng) → nếu chưa đạt thì tự sửa
+(làm nét 0.35, rồi nâng pipeline) → chốt ảnh điểm cao nhất + báo cáo JSON.
+
+Ba mức: `nhanh` (2 ứng viên, không sửa) · `chuan` (3 + 1 lần sửa) · `ky`
+(4, ép pipeline `quality`, 2 lần sửa, nâng tới `hires`).
+
+Ngưỡng "mờ" **tự hiệu chuẩn**: so độ nét của ảnh với chính ảnh đó sau khi bị làm mờ
+radius=2. Không có ngưỡng tuyệt đối nào bị bịa ra, nên dùng được cho mọi nội dung ảnh.
+
+⚠️ **Điểm số không đo được giải phẫu** — thừa ngón, méo mặt, dính chi thì máy không tự
+đánh giá được. Khoản đó nhờ preset/prompt (Cell 6) hoặc sửa tay bằng Cell 7.
+Cell 8b là nơi khoanh vùng nguyên nhân khi ảnh mờ (VAE fp16 / cfg / lượng tử).
 
 ## 🧪 Tự kiểm tra (không cần GPU, không cần mạng)
 

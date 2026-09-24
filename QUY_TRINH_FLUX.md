@@ -183,6 +183,68 @@ Cấu hình của lượt chạy cuối được ghi ở `/content/lan_chay_cuoi
 
 ---
 
+## 🔁 Quy trình toàn diện (Cell 8c) — tạo → đo → sửa → chốt
+
+Thay vì "tạo rồi nhắm mắt chọn", Cell 8c chạy một vòng kín:
+
+```
+   TẠO n ứng viên (mỗi cái một seed)
+        │
+        ▼
+   ĐO từng ảnh ────── đạt? ──── CÓ ──► CHỐT ảnh điểm cao nhất
+        │                                     │
+        └── KHÔNG ──► SỬA                     ▼
+                      lần 1: làm nét 0.35   báo cáo JSON + hiện ảnh
+                      lần 2: nâng pipeline
+                      (vẫn không đạt → trả ảnh tốt nhất + nói rõ lỗi còn lại)
+```
+
+| Mức | Ứng viên | Pipeline | Số lần sửa | Dùng khi |
+|---|---|---|---|---|
+| `nhanh` | 2 | theo preset | 0 | thử prompt, cần kết quả ngay |
+| `chuan` | 3 | theo preset | 1 (làm nét) | mặc định |
+| `ky` | 4 | **ép `quality`** | 2 (làm nét + nâng `hires`) | ảnh để dùng thật |
+
+**Tiêu chí chấm điểm** (chỉ dùng thứ đo được bằng thống kê ảnh):
+
+| Lỗi | Cách đo | Trừ |
+|---|---|---|
+| mờ | độ nét < `NGUONG_NET` × **mốc tự hiệu chuẩn** (chính ảnh đó bị mờ radius=2) | −30 |
+| cháy sáng | > 2% pixel ≥ 250 | −25 |
+| quá tối | > 2% pixel ≤ 5 | −15 |
+| loãng | độ lệch chuẩn mức xám < 15 | −15 |
+
+Ngưỡng "mờ" **không phải số bịa ra**: nó so với chính bức ảnh đó khi bị làm mờ nhân tạo,
+nên áp dụng được cho mọi nội dung ảnh. Mặc định `NGUONG_NET = 3.0` (gấp 3 lần mốc mờ).
+
+⚠️ **Điểm số KHÔNG đo được giải phẫu.** Thừa ngón, méo mặt, dính chi — máy tính hiện tại
+không tự đánh giá được mấy thứ đó, và em sẽ không giả vờ là có. Khoản đó vẫn nhờ
+**preset + prompt** (Cell 6) hoặc **sửa tay bằng Cell 7** (tô vùng rồi inpaint).
+
+Gọi bằng code:
+
+```python
+tao_anh_tot(preset="chan_dung_can", muc="ky", so_ung_vien=4)
+tao_anh_tot(prompt="a lighthouse at dawn", size="1216x832 (ngang, ~1MP)", muc="nhanh")
+```
+
+Kết quả: ảnh được chọn + bảng điểm mọi ứng viên + `/content/bao_cao_chat_luong.json`.
+
+## 🧭 Kiểm tra tài nguyên (Cell 8)
+
+Cell 8 giờ in thêm: GPU/VRAM/RAM/ổ đĩa (đọc từ `/system_stats` + `shutil.disk_usage`) và
+**cấu hình khuyên dùng theo VRAM thực tế của máy**:
+
+| VRAM | Khung hình | Pipeline | VAE_PREC |
+|---|---|---|---|
+| ≥ 20 GB | 1024×1024 | `quality` | Mặc định |
+| ≥ 12 GB | 832×1216 | `quality` | Mặc định |
+| ≥ 8 GB | 832×1216 | `standard` | Mặc định |
+| < 8 GB | 768×1024 | `fast` | `fp16-vae` (ảnh sẽ mờ hơn — xem mục ảnh mờ) |
+
+`/system_stats` chỉ trả `devices[].vram_total/vram_free` và `system.ram_total/ram_free`
+(**không có** thông tin ổ đĩa), nên ổ đĩa lấy bằng `shutil.disk_usage('/content')`.
+
 ## 🛠 Xử lý lỗi
 
 | Hiện tượng | Nguyên nhân | Cách sửa |

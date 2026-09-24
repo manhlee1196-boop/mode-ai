@@ -35,6 +35,14 @@ bật negative — và in rõ `✅ Negative đang BẬT` / `⚠️ negative KHÔ
 đoán. Muốn nhanh nhất: `NEG_MODE = khong - không dùng negative`. Chi tiết:
 [`QUY_TRINH_FLUX.md`](QUY_TRINH_FLUX.md#-prompt--cách-viết-để-không-bị-lỗi).
 
+**Quy trình khép kín (Cell 8c)**: tạo nhiều ứng viên → chấm điểm từng ảnh (mờ / cháy sáng /
+tối / loãng) → tự sửa (làm nét, nâng pipeline) → chốt ảnh tốt nhất + báo cáo JSON.
+Ba mức `nhanh` / `chuan` / `ky`. Ngưỡng "mờ" tự hiệu chuẩn trên chính bức ảnh, không phải
+số cố định. **Điểm số không đo được giải phẫu** (thừa ngón, méo mặt) — khoản đó vẫn nhờ
+preset/prompt và Cell 7. Chi tiết: [`QUY_TRINH_FLUX.md`](QUY_TRINH_FLUX.md).
+
+**Cell 8** giờ cũng kiểm tra tài nguyên (VRAM/RAM/ổ đĩa) và đề xuất cấu hình phù hợp máy.
+
 Model ~12 GB: UNET `flux1-schnell-Q5_K_S.gguf` (8.26) + T5-XXL `Q4_K_M` (2.9) +
 CLIP-L (0.25) + VAE `ae.safetensors` (0.34) + YOLO mặt/tay + SAM.
 
