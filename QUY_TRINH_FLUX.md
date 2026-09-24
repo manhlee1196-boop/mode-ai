@@ -119,3 +119,16 @@ và VRAM đang dùng.
 | [`docs/AUDIT_FLUX_2026-09.md`](docs/AUDIT_FLUX_2026-09.md) | Quét quy trình cũ: 12 lỗi + bằng chứng trích từ mã nguồn |
 | [`workflows/README.md`](workflows/README.md) | Sơ đồ node từng pipeline, cách sinh & kiểm tra |
 | [`QUY_TRINH_FLUX.md`](QUY_TRINH_FLUX.md) | File này — hướng dẫn sử dụng |
+
+## 🔧 Nếu muốn chỉnh workflow
+
+Workflow **không sửa tay** — chúng được sinh từ `scripts/build_workflows.py`.
+Sửa file đó, rồi chạy:
+
+```bash
+python3 scripts/check_sync.py --fix
+```
+
+Lệnh này sinh lại `workflows/`, `workflows/ui/` và notebook, so từng byte, rồi kiểm tra tĩnh
+đối chiếu với 891 node class trích từ mã nguồn thật. Nếu bạn sửa file JSON trực tiếp, CI trên
+GitHub sẽ báo lệch.

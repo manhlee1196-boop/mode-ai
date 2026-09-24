@@ -47,21 +47,24 @@ code đó được nhúng vào Cell 4 của notebook. `scripts/make_notebook.py`
 nếu hai bản lệch nhau.
 
 ```bash
-# sinh workflows/ (API) + workflows/ui/ (có layout, kéo-thả vào giao diện)
-python3 scripts/build_workflows.py
-for f in workflows/flux_q5_*.json; do python3 scripts/api_to_ui.py "$f"; done
-
-# kiểm tra tĩnh: đối chiếu 891 node class trích từ mã nguồn thật
-python3 scripts/validate_workflows.py
+python3 scripts/check_sync.py          # một lệnh làm hết (đồng bộ + kiểm tra tĩnh)
+python3 scripts/check_sync.py --fix    # tự ghi lại artifact cho khớp nguồn
 ```
+
+Nó sinh lại toàn bộ artifact vào thư mục tạm, so **từng byte** với bản đã commit, rồi chạy
+kiểm tra tĩnh. Dùng khi bạn sửa `build_workflows.py` hoặc khi nghi ngờ ai đó sửa tay file JSON.
 
 | Script | Việc |
 |---|---|
-| `scripts/node_spec.py` | Trích `INPUT_TYPES`/`RETURN_TYPES` từ mã nguồn ComfyUI + GGUF + Impact Pack/Subpack → `workflows/node_spec.json` |
+| `scripts/check_sync.py` | **Một lệnh làm hết:** sinh lại → so khớp → kiểm tra tĩnh |
 | `scripts/build_workflows.py` | Sinh 5 pipeline (cũng là đoạn nhúng trong Cell 4) |
 | `scripts/api_to_ui.py` | Đổi API format ↔ UI format (có layout) |
-| `scripts/validate_workflows.py` | Kiểm tra tĩnh mọi workflow + tham chiếu trong notebook |
 | `scripts/make_notebook.py` | Sinh notebook, tự kiểm tra trước khi ghi |
+| `scripts/validate_workflows.py` | Kiểm tra tĩnh mọi workflow + tham chiếu trong notebook |
+| `scripts/node_spec.py` | Trích `INPUT_TYPES`/`RETURN_TYPES` từ mã nguồn ComfyUI + GGUF + Impact Pack/Subpack → `workflows/node_spec.json` |
 
-Kiểm tra không cần GPU, không cần ComfyUI chạy — chỉ cần `workflows/node_spec.json`
-(đã có sẵn trong repo). Cách cập nhật spec: `workflows/README.md`.
+Kiểm tra không cần GPU, không cần ComfyUI chạy, không cần mạng — chỉ cần
+`workflows/node_spec.json` (đã commit sẵn). Cách cập nhật spec: `workflows/README.md`.
+
+**CI** (`.github/workflows/validate-flux.yml`) chạy `check_sync.py` trên mọi push/PR.
+Nó fail nếu artifact lệch khỏi nguồn hoặc workflow có lỗi — chạy xong trong ~8 giây.

@@ -992,19 +992,27 @@ casual linen shirt, warm neutral background, film grain, high detail
 
 Negative để trống: với cfg = 1.0, negative không được dùng — để trống còn giúp T5 encode nhanh hơn.
 
-## 🧪 Tự kiểm tra (không cần GPU)
+## 🧪 Tự kiểm tra (không cần GPU, không cần mạng)
+
+```bash
+python3 scripts/check_sync.py          # một lệnh làm hết
+python3 scripts/check_sync.py --fix    # tự ghi lại artifact cho khớp nguồn
+```
+
+`check_sync.py` sinh lại toàn bộ artifact vào thư mục tạm, so **từng byte** với bản trong repo,
+rồi chạy kiểm tra tĩnh. Cơ chế này có nghĩa là **bạn sửa workflow bằng cách sửa
+`scripts/build_workflows.py`**, không phải sửa file JSON — nếu không, CI sẽ báo lệch.
+
+Kiểm tra tĩnh đối chiếu từng node với `INPUT_TYPES`/`RETURN_TYPES` trích trực tiếp từ mã nguồn
+ComfyUI + ComfyUI-GGUF + Impact Pack/Subpack (891 node class): thiếu input required, sai enum,
+link đứt, sai kiểu dữ liệu, chu trình, sai tiền tố `bbox/` — bị bắt hết trước khi lên Colab.
+
+Muốn cập nhật spec theo phiên bản ComfyUI/Impact Pack mới hơn:
 
 ```bash
 python3 scripts/node_spec.py --comfy /tmp/ComfyUI --gguf /tmp/ComfyUI-GGUF \
         --impact /tmp/Impact-Pack --subpack /tmp/Impact-Subpack -o workflows/node_spec.json
-python3 scripts/build_workflows.py          # sinh lại workflows/*.json
-python3 scripts/api_to_ui.py workflows/flux_q5_standard.json   # bản UI có layout
-python3 scripts/validate_workflows.py       # đối chiếu với INPUT_TYPES thật
 ```
-
-`validate_workflows.py` đối chiếu từng node với `INPUT_TYPES`/`RETURN_TYPES` trích trực tiếp từ
-mã nguồn ComfyUI + ComfyUI-GGUF + Impact Pack/Subpack: thiếu input required, sai enum, link
-đứt, sai kiểu dữ liệu, chu trình, sai tiền tố `bbox/` — tất cả đều bị bắt trước khi lên Colab.
 """)
 
 
